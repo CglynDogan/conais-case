@@ -15,57 +15,57 @@ import { createLlmAnalyzer, SAFE_FALLBACK } from "./llmAnalyzer.js";
 
 const DEMO_SCRIPT_TR = [
   {
-    text: "Merhaba, geçen hafta gönderdiğiniz teklifi inceledim.",
+    text: "Merhaba, aslında tam olarak ne istediğimizi henüz netleştiremedik.",
     lang: "tr-TR",
     delayMs: 800,
   },
   {
-    text: "Ürününüz ilgimi çekiyor ama fiyatı beklediğimizden oldukça yüksek.",
+    text: "Şirketimizdeki bazı süreçleri iyileştirmek istiyoruz ama bütçemiz oldukça kısıtlı.",
     lang: "tr-TR",
     delayMs: 2600,
   },
   {
-    text: "Rakiplerinize kıyasla bu fiyat farkını nasıl açıklıyorsunuz?",
+    text: "Daha önce benzer bir çözüm denedik ama pek işe yaramadı, bu yüzden biraz kararsızım.",
     lang: "tr-TR",
-    delayMs: 4800,
+    delayMs: 5000,
   },
   {
-    text: "Kurulum ve entegrasyon süreci için ek bir maliyet var mı?",
+    text: "Ne zaman başlayabileceğimizi bilmiyoruz, bu konuda ortağım ve yöneticimizle birlikte karar vermemiz gerekiyor.",
     lang: "tr-TR",
-    delayMs: 7200,
+    delayMs: 7800,
   },
   {
-    text: "Yıllık lisans yerine aylık ödeme seçeneği sunuyor musunuz?",
+    text: "Maliyetin aylık mı yoksa yıllık mı olduğunu da anlamak istiyoruz.",
     lang: "tr-TR",
-    delayMs: 9800,
+    delayMs: 10500,
   },
 ];
 
 const DEMO_SCRIPT_EN = [
   {
-    text: "Hi, I had a chance to review the proposal you sent over last week.",
+    text: "Hi, we're trying to figure out what we need exactly — it's not entirely clear yet.",
     lang: "en-US",
     delayMs: 800,
   },
   {
-    text: "The product looks interesting but honestly the price is higher than what we budgeted for.",
+    text: "We want to improve some internal processes but our budget is quite tight.",
     lang: "en-US",
     delayMs: 2600,
   },
   {
-    text: "How do you justify the cost compared to your competitors in this space?",
+    text: "We tried something similar before and it didn't really work out, so I'm unsure about this.",
     lang: "en-US",
-    delayMs: 4800,
+    delayMs: 5000,
   },
   {
-    text: "Are there any additional fees for implementation and onboarding?",
+    text: "We're not sure when we could start — my partner and our director both need to approve this.",
     lang: "en-US",
-    delayMs: 7200,
+    delayMs: 7800,
   },
   {
-    text: "Do you offer a monthly payment option instead of an annual contract?",
+    text: "We'd also need to understand whether it's a monthly or annual cost structure.",
     lang: "en-US",
-    delayMs: 9800,
+    delayMs: 10500,
   },
 ];
 
@@ -117,9 +117,6 @@ wss.on("connection", (ws) => {
   // The silence-timer path in analysisTrigger will catch the trailing content.
   let isLlmBusy = false;
 
-  // Track recent signal tags to give the LLM dedup context
-  let lastSignalTags = [];
-
   // Demo playback timers — cleared on reset so a second demo:trigger is clean
   const demoTimers = [];
 
@@ -134,11 +131,7 @@ wss.on("connection", (ws) => {
       });
 
       if (signal) {
-        console.log(
-          `[HEURISTIC] ${signal.tone_alert.type}`,
-          signal._debug ?? "",
-        );
-        lastSignalTags = [signal.tone_alert.type];
+        console.log(`[HEURISTIC] ${signal.signal_type}`, signal._debug ?? "");
         wsSend(ws, WS_EVENTS.ANALYSIS_UPDATE, signal);
       }
     },
@@ -159,22 +152,24 @@ wss.on("connection", (ws) => {
       const startMs = Date.now();
 
       try {
-        const result = await llmAnalyzer.analyze(sess, lastSignalTags);
+        const result = await llmAnalyzer.analyze(sess, sess.getConversationState());
         const elapsed = Date.now() - startMs;
         console.log(
-          `[LLM] Response in ${elapsed}ms — priority:${result.priority} tags:[${result.reason_tags.join(",")}]`,
+          `[LLM] Response in ${elapsed}ms — signals:[${result.customer_signals.join(",")}] whisper:"${result.whisper_note}"`,
         );
 
-        // Update dedup context for next LLM call
-        if (result.reason_tags.length > 0) {
-          lastSignalTags = result.reason_tags;
-        }
+        // Update accumulated conversation state with this batch's findings
+        sess.updateConversationState({
+          field_status:     result.field_status,
+          customer_signals: result.customer_signals,
+          whisper_note:     result.whisper_note,
+        });
 
         // Only send if there is something meaningful to show
         if (
-          result.coach_message ||
-          result.suggested_questions.length > 0 ||
-          result.info_card
+          result.whisper_note ||
+          result.next_questions.length > 0 ||
+          result.customer_signals.length > 0
         ) {
           wsSend(ws, WS_EVENTS.ANALYSIS_UPDATE, result);
         }
@@ -254,7 +249,6 @@ wss.on("connection", (ws) => {
         session.reset();
         trigger.reset();
         heuristics.reset();
-        lastSignalTags = [];
         isLlmBusy = false;
         console.log(
           `[DEMO] Starting demo playback (${payload?.lang ?? "tr-TR"})`,

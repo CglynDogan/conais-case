@@ -1,7 +1,7 @@
 /**
  * heuristics.js
  *
- * Rule-based coaching signals. These run immediately on every finalized
+ * Lightweight intake signal detectors. Run immediately on every finalized
  * utterance — no LLM call required.
  *
  * Usage:
@@ -9,125 +9,96 @@
  *   const signal = engine.run({ latest, previous, contextWindow, utteranceCount });
  *   engine.reset();                             // called on session reset
  *
- * Signal priority (highest first):
- *   1. price_objection — keyword detected in latest utterance
- *   2. too_fast        — estimated WPM exceeds threshold
- *   3. long_monologue  — accumulated utterances exceed threshold
+ * Detectors (in priority order):
+ *   1. budget_signal          — price / cost / budget language → price_sensitive
+ *   2. urgency_signal         — urgency / deadline language     → urgent
+ *   3. decision_maker_unknown — partner / team / approval lang  → decision_maker_unknown
+ *   4. hesitation             — hedging / uncertainty language  → hesitant
  *
- * Only the highest-priority signal that is NOT on cooldown is returned.
- * Cooldowns prevent the same signal from firing repeatedly in a short window.
- *
- * Return shape (matches analysis:update payload, source distinguishes from LLM):
- *   { tone_alert: { type, message }, suggestions: [], info_card: null, source: 'rule' }
+ * Return shape:
+ *   { signal_type: string, source: 'rule', _debug? }
  * or null when nothing notable.
  */
 
-// ── Thresholds ─────────────────────────────────────────────
+// ── Cooldowns ────────────────────────────────────────────────────────
+// Minimum ms between repeated signals of the same type per session.
 
-const TOO_FAST_WPM_THRESHOLD = 160;
-const TOO_FAST_MIN_WORDS = 5;     // skip very short utterances
-const LONG_MONOLOGUE_THRESHOLD = 5; // utterances before first trigger
-
-// Minimum ms between repeated signals of the same type.
-// Prevents the same coaching point from flooding the UI.
 const COOLDOWN_MS = {
-  price_objection: 30_000, // 30 s — topic doesn't change that fast
-  too_fast:        15_000, // 15 s — allow re-alert after a sustained fast run
-  long_monologue:  25_000, // 25 s — natural reminder interval
+  budget_signal:          30_000,
+  urgency_signal:         25_000,
+  decision_maker_unknown: 40_000,
+  hesitation:             20_000,
 };
 
-const PRICE_KEYWORDS = {
-  tr: ['pahalı', 'fiyat', 'fiyatlar', 'bütçe', 'ücret', 'maliyet', 'masraf', 'para'],
-  en: ['expensive', 'price', 'pricing', 'cost', 'budget', 'fee', 'costly', 'afford'],
+// ── Keyword banks ────────────────────────────────────────────────────
+
+const BUDGET_KEYWORDS = {
+  tr: ['pahalı', 'fiyat', 'fiyatlar', 'bütçe', 'ücret', 'maliyet', 'masraf', 'para', 'kısıtlı', 'sınırlı'],
+  en: ['expensive', 'price', 'pricing', 'cost', 'budget', 'fee', 'costly', 'afford', 'limited', 'tight'],
 };
 
-// ── Pure signal detectors (stateless) ─────────────────────
-// These return a raw signal or null. Cooldown is applied in the engine.
+const URGENCY_KEYWORDS = {
+  tr: ['acil', 'hızlıca', 'en kısa sürede', 'urgently', 'asap', 'hemen', 'bekleyemeyiz', 'bu hafta', 'bu ay'],
+  en: ['urgent', 'asap', 'immediately', 'right away', 'as soon as', 'can\'t wait', 'this week', 'deadline'],
+};
 
-/**
- * @param {import('./transcriptSession.js').Utterance} latest
- */
-function detectPriceObjection(latest) {
+const DECISION_MAKER_KEYWORDS = {
+  tr: ['ortağım', 'ekibim', 'yöneticim', 'direktörüm', 'onay', 'karar veremem', 'birlikte karar', 'eşim', 'patronum'],
+  en: ['partner', 'my team', 'manager', 'director', 'approval', 'can\'t decide', 'together', 'spouse', 'boss'],
+};
+
+const HESITATION_KEYWORDS = {
+  tr: ['emin değilim', 'bilmiyorum', 'belki', 'düşünmem lazım', 'henüz netleşmedi', 'tam olarak değil', 'kararsızım'],
+  en: ["not sure", "i don't know", "maybe", 'need to think', 'not clear yet', 'not entirely', 'undecided', 'unsure'],
+};
+
+// ── Pure detectors (stateless) ───────────────────────────────────────
+
+/** @param {import('./transcriptSession.js').Utterance} latest */
+function detectBudgetSignal(latest) {
   const lower = latest.text.toLowerCase();
   const lang = latest.lang?.startsWith('tr') ? 'tr' : 'en';
-  const hit = PRICE_KEYWORDS[lang].find((kw) => lower.includes(kw));
+  const hit = BUDGET_KEYWORDS[lang].find((kw) => lower.includes(kw));
   if (!hit) return null;
-
-  return {
-    tone_alert: {
-      type: 'price_objection',
-      message: lang === 'tr' ? 'Fiyat itirazı tespit edildi' : 'Price objection detected',
-    },
-    _debug: { keyword: hit },
-  };
+  return { signal_type: 'budget_signal', _debug: { keyword: hit } };
 }
 
-/**
- * Estimated WPM using elapsed time between the two most recent finals.
- * This is a lower-bound estimate (elapsed includes pause time between
- * utterances, not just speaking time), so threshold is set conservatively.
- *
- * @param {import('./transcriptSession.js').Utterance} latest
- * @param {import('./transcriptSession.js').Utterance | null} previous
- */
-function detectTooFast(latest, previous) {
-  if (!previous) return null;
-  if (latest.wordCount < TOO_FAST_MIN_WORDS) return null;
-
-  const elapsedMs = latest.ts - previous.ts;
-  if (elapsedMs <= 0) return null;
-
-  const wpm = Math.round(latest.wordCount / (elapsedMs / 60_000));
-  if (wpm <= TOO_FAST_WPM_THRESHOLD) return null;
-
+/** @param {import('./transcriptSession.js').Utterance} latest */
+function detectUrgencySignal(latest) {
+  const lower = latest.text.toLowerCase();
   const lang = latest.lang?.startsWith('tr') ? 'tr' : 'en';
-  return {
-    tone_alert: {
-      type: 'too_fast',
-      message: lang === 'tr' ? 'Tempo çok hızlı' : 'Pace is too fast',
-    },
-    _debug: { wpm, wordCount: latest.wordCount, elapsedMs },
-  };
+  const hit = URGENCY_KEYWORDS[lang].find((kw) => lower.includes(kw));
+  if (!hit) return null;
+  return { signal_type: 'urgency_signal', _debug: { keyword: hit } };
 }
 
-/**
- * Fires once the utterance count reaches the threshold.
- * Cooldown in the engine controls how often it can repeat.
- *
- * @param {number} utteranceCount
- * @param {import('./transcriptSession.js').Utterance[]} contextWindow
- */
-function detectLongMonologue(utteranceCount, contextWindow) {
-  if (utteranceCount < LONG_MONOLOGUE_THRESHOLD) return null;
-
-  const latest = contextWindow[contextWindow.length - 1];
-  const lang = latest?.lang?.startsWith('tr') ? 'tr' : 'en';
-  return {
-    tone_alert: {
-      type: 'long_monologue',
-      message:
-        lang === 'tr'
-          ? 'Uzun konuşma — soru sormayı deneyin'
-          : 'Long monologue — try asking a question',
-    },
-    _debug: { utteranceCount },
-  };
+/** @param {import('./transcriptSession.js').Utterance} latest */
+function detectDecisionMakerUncertainty(latest) {
+  const lower = latest.text.toLowerCase();
+  const lang = latest.lang?.startsWith('tr') ? 'tr' : 'en';
+  const hit = DECISION_MAKER_KEYWORDS[lang].find((kw) => lower.includes(kw));
+  if (!hit) return null;
+  return { signal_type: 'decision_maker_unknown', _debug: { keyword: hit } };
 }
 
-// ── Engine factory (stateful, per-connection) ──────────────
+/** @param {import('./transcriptSession.js').Utterance} latest */
+function detectHesitation(latest) {
+  const lower = latest.text.toLowerCase();
+  const lang = latest.lang?.startsWith('tr') ? 'tr' : 'en';
+  const hit = HESITATION_KEYWORDS[lang].find((kw) => lower.includes(kw));
+  if (!hit) return null;
+  return { signal_type: 'hesitation', _debug: { keyword: hit } };
+}
 
-/**
- * Creates a heuristics engine instance with its own cooldown state.
- * One engine per WebSocket connection — never share across connections.
- */
+// ── Engine factory (stateful, per-connection) ────────────────────────
+
 export function createHeuristicsEngine() {
   /** @type {Record<string, number>} signal type → last fired timestamp */
   const lastFiredAt = {};
 
   function isOnCooldown(type) {
     const cooldown = COOLDOWN_MS[type] ?? 0;
-    const last = lastFiredAt[type] ?? 0;
-    return Date.now() - last < cooldown;
+    return Date.now() - (lastFiredAt[type] ?? 0) < cooldown;
   }
 
   function markFired(type) {
@@ -135,42 +106,32 @@ export function createHeuristicsEngine() {
   }
 
   /**
-   * Run all detectors and return the first signal that is not on cooldown.
-   *
    * @param {{
-   *   latest: import('./transcriptSession.js').Utterance,
-   *   previous: import('./transcriptSession.js').Utterance | null,
-   *   contextWindow: import('./transcriptSession.js').Utterance[],
+   *   latest:         import('./transcriptSession.js').Utterance,
+   *   previous:       import('./transcriptSession.js').Utterance | null,
+   *   contextWindow:  import('./transcriptSession.js').Utterance[],
    *   utteranceCount: number,
    * }} ctx
-   * @returns {{ tone_alert, suggestions, info_card, source: 'rule', _debug? } | null}
+   * @returns {{ signal_type: string, source: 'rule', _debug? } | null}
    */
-  function run({ latest, previous, contextWindow, utteranceCount }) {
+  function run({ latest }) {
     const candidates = [
-      detectPriceObjection(latest),
-      detectTooFast(latest, previous),
-      detectLongMonologue(utteranceCount, contextWindow),
+      detectBudgetSignal(latest),
+      detectUrgencySignal(latest),
+      detectDecisionMakerUncertainty(latest),
+      detectHesitation(latest),
     ];
 
     for (const signal of candidates) {
       if (!signal) continue;
-      const type = signal.tone_alert.type;
-      if (isOnCooldown(type)) continue;
-
-      markFired(type);
-      return {
-        tone_alert: signal.tone_alert,
-        suggestions: [],
-        info_card: null,
-        source: 'rule', // Phase 4 LLM responses will use source: 'llm'
-        _debug: signal._debug,
-      };
+      if (isOnCooldown(signal.signal_type)) continue;
+      markFired(signal.signal_type);
+      return { signal_type: signal.signal_type, source: 'rule', _debug: signal._debug };
     }
 
     return null;
   }
 
-  /** Reset cooldown state when a new listening session starts. */
   function reset() {
     for (const key of Object.keys(lastFiredAt)) {
       delete lastFiredAt[key];

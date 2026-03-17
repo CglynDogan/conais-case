@@ -1,8 +1,8 @@
-# Sales Call Coach — Real-Time Interview Assistant
+# Intake Whisper Assistant — Real-Time Intake Intelligence
 
-A real-time AI coaching assistant for sales calls. It listens through the browser microphone, analyzes the live transcript, and surfaces coaching signals on screen while the conversation is happening.
+A real-time AI assistant for intake agents. It listens through the browser microphone, analyzes the live conversation, and surfaces structured intake guidance silently in the background while the call is in progress.
 
-Built as a hiring case study prototype. Demonstrates a full real-time pipeline: speech capture → WebSocket transport → rule-based heuristics + LLM analysis → structured coaching UI.
+Built as a hiring case study prototype. Demonstrates a full real-time pipeline: speech capture → WebSocket transport → rule-based intake hints + LLM intake intelligence → structured guidance UI.
 
 ---
 
@@ -38,14 +38,14 @@ To show the product without a microphone or live API behavior, use the built-in 
 4. Click **Demo** in the header (requires backend to be connected)
 5. Watch the scripted conversation replay automatically
 
-The demo runs a 5-utterance sales scenario through the **real pipeline** — same heuristics, same Gemini LLM call, same UI updates. It is not mocked. You will see:
-- A rule-based `Price Objection` signal fire immediately on utterance 2
-- An LLM batch response arrive after utterance 3 with a coaching message and suggested questions
-- Additional utterances trigger a `Long Monologue` rule signal and a second LLM batch
+The demo runs a 5-utterance intake scenario through the **real pipeline** — same heuristics, same Gemini LLM call, same UI updates. It is not mocked. You will see:
+- A rule-based intake hint fire immediately (e.g. `budget_signal`, `hesitation`, `decision_maker_unknown`)
+- An LLM batch response arrive after utterance 3 with `field_status`, `next_questions`, and a `whisper_note`
+- Additional utterances trigger further rule hints and a second LLM batch
 
-**Turkish demo** (`tr-TR`): prospect questions about a high-priced proposal, asks about pricing alternatives and integration costs.
+**Turkish demo** (`tr-TR`): customer with a vague goal, budget constraints, a failed prior attempt, decision-maker uncertainty, and a cost structure question.
 
-**English demo** (`en-US`): same scenario in English — budget concerns, competitive pricing challenge, implementation fees, monthly vs. annual contract.
+**English demo** (`en-US`): same intake scenario in English — unclear need, tight budget, hesitation from prior failure, partner/director approval required, monthly vs. annual cost.
 
 Click **Demo** again to restart. Click **Exit Demo** to return to live microphone mode.
 
@@ -151,17 +151,12 @@ All messages: `{ type: string, payload: object }`
 
 ### `analysis:update` — rule-based (`source: "rule"`)
 
-Fires immediately after each utterance:
+Fires immediately after each utterance when a keyword is detected:
 
 ```json
 {
   "source": "rule",
-  "tone_alert": {
-    "type": "price_objection",
-    "message": "Fiyat itirazı tespit edildi"
-  },
-  "suggestions": [],
-  "info_card": null
+  "signal_type": "budget_signal"
 }
 ```
 
@@ -172,35 +167,43 @@ Fires after 3 utterances or 3s of silence:
 ```json
 {
   "source": "llm",
-  "priority": "high",
-  "coach_message": "Bütçe endişesini anla.",
-  "suggested_questions": [
-    "Bütçeniz ne kadar?",
-    "Hangi özellikler sizin için kritik?"
-  ],
-  "info_card": {
-    "term": "Yıllık Lisans",
-    "note": "Ürünün yıllık sabit ücret karşılığında kullanım hakkı."
+  "customer_signals": ["price_sensitive", "hesitant"],
+  "field_status": {
+    "customer_goal": "partial",
+    "urgency": "unknown",
+    "budget": "partial",
+    "current_status": "unknown",
+    "prior_attempts": "answered",
+    "main_constraint": "unknown",
+    "decision_maker": "missing",
+    "timeline": "unknown",
+    "eligibility_risk": "unknown",
+    "next_step_readiness": "unknown"
   },
-  "reason_tags": ["price_objection"]
+  "next_questions": [
+    "Bütçenizle ilgili belirli bir aralık düşündünüz mü?",
+    "Bu karar için kimler dahil olacak?"
+  ],
+  "whisper_note": "Karar vericileri ve bütçe aralığını netleştirin."
 }
 ```
 
-`info_card` is `null` when not applicable. `suggested_questions` is `[]` when none.
+Only sent when `whisper_note`, `next_questions`, or `customer_signals` is non-empty.
 
 ---
 
-## Rule-Based Signals
+## Rule-Based Intake Hints
 
-Heuristics run synchronously on every utterance — no LLM required.
+Heuristics run synchronously on every utterance — no LLM required. These are lightweight helpers that complement the LLM, not a replacement for it.
 
-| Signal | Trigger | Cooldown |
-|--------|---------|----------|
-| `price_objection` | Keyword match (TR: fiyat, pahalı, bütçe… / EN: price, cost, budget…) | 30 s |
-| `too_fast` | Estimated WPM > 160, min 5 words | 15 s |
-| `long_monologue` | 5+ cumulative utterances | 25 s |
+| Signal | Trigger | Maps to | Cooldown |
+|--------|---------|---------|----------|
+| `budget_signal` | Budget/cost/price keywords | `price_sensitive` | 30 s |
+| `urgency_signal` | Urgency/deadline keywords | `urgent` | 25 s |
+| `decision_maker_unknown` | Partner/approval/team keywords | `decision_maker_unknown` | 40 s |
+| `hesitation` | Uncertainty/hedging keywords | `hesitant` | 20 s |
 
-Only the highest-priority signal not on cooldown is sent per utterance. Cooldowns reset when a new session starts or demo restarts.
+Only the first matching signal not on cooldown is sent per utterance. Cooldowns reset on session reset or demo restart.
 
 ---
 
@@ -210,8 +213,8 @@ Only the highest-priority signal not on cooldown is sent per utterance. Cooldown
 - **Output**: enforced structured JSON via `responseSchema` + `responseMimeType: "application/json"`
 - **Timeout**: 5 s (`Promise.race`). On timeout, `SAFE_FALLBACK` is returned and the app continues.
 - **Concurrency**: `isLlmBusy` per connection. If a batch trigger fires while a call is in-flight, the batch is skipped. The silence timer will fire again when speech resumes.
-- **Fallback**: `SAFE_FALLBACK = { source: 'llm', priority: 'low', coach_message: '', suggested_questions: [], info_card: null, reason_tags: [] }`. Empty results are dropped and not sent to the client.
-- **Dedup**: `lastSignalTags` from the previous LLM response is included in the prompt as `RECENT_SIGNALS` to avoid identical coaching messages repeating.
+- **Fallback**: `SAFE_FALLBACK = { source: 'llm', customer_signals: [], field_status: { …all 'unknown' }, next_questions: [], whisper_note: '' }`. Empty results are not sent to the client.
+- **Dedup**: accumulated `customer_signals` and `field_status` are carried across LLM batches via `conversationState` and injected into each prompt — the model knows what has already been detected and what fields are already answered.
 
 ---
 
@@ -236,6 +239,8 @@ Only the highest-priority signal not on cooldown is sent per utterance. Cooldown
 | 3     | ✅ Done | Session state, rule-based heuristics, two-path trigger |
 | 4     | ✅ Done | Gemini LLM integration, structured output, fallback |
 | 5     | ✅ Done | Demo mode, UI polish, prompt refinement, repo cleanup |
+| A     | ✅ Done | Product pivot: intake intelligence layer (schema, session state, LLM analyzer, prompt) |
+| B     | ✅ Done | Intake demo scripts (TR + EN), heuristics repurposed as intake signal helpers |
 
 ---
 
@@ -263,7 +268,6 @@ Only the highest-priority signal not on cooldown is sent per utterance. Cooldown
 - **LLM latency** — Gemini responses typically take 1–3 s; the 5 s timeout is generous but visible under load
 - **No persistence** — session state is in-memory; restarting the backend clears all sessions
 - **Single language per session** — switching language mid-session causes a brief stop/restart of the recognizer
-- **Demo is Turkish** — the scripted demo uses a Turkish sales scenario; English demo would require a second script
 
 ## Future Work
 
@@ -271,5 +275,5 @@ Only the highest-priority signal not on cooldown is sent per utterance. Cooldown
 - Streaming LLM response for lower time-to-first-token
 - Persistent session log for post-call review
 - Confidence-threshold filtering on STT (currently all finals are forwarded)
-- English demo script
+- Frontend rebuild for intake-specific UI (whisper note, field coverage, next questions)
 - Deployment configuration (HTTPS required for mic in non-localhost environments)
