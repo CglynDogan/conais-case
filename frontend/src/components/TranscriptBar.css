@@ -1,0 +1,39 @@
+.transcript-bar {
+  max-height: 140px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* Custom scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.transcript-bar::-webkit-scrollbar {
+  width: 4px;
+}
+.transcript-bar::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.transcript-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+/* Committed utterance — full brightness */
+.transcript-final {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* In-progress recognition — visually distinct, replaced in place */
+.transcript-interim {
+  color: var(--text-muted);
+  font-size: 14px;
+  font-style: italic;
+  line-height: 1.5;
+}
