@@ -24,10 +24,10 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, buildUserPrompt } from "./promptBuilder.js";
 
-const TIMEOUT_MS = 5_000;
+const TIMEOUT_MS = 10_000;
 
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
-const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
+const DEFAULT_OPENAI_MODEL = "gpt-5-nano";
 
 // ── Response schema (Gemini structured output) ─────────────────────
 
@@ -68,10 +68,10 @@ const RESPONSE_SCHEMA = {
 // ── Safe fallback ──────────────────────────────────────────────────
 
 export const SAFE_FALLBACK = Object.freeze({
-  source:              "llm",
-  feedback:            "",
+  source: "llm",
+  feedback: "",
   suggested_questions: [],
-  info_card:           null,
+  info_card: null,
 });
 
 // ── Shared utilities ───────────────────────────────────────────────
@@ -84,8 +84,7 @@ function withTimeout(promise, ms) {
 }
 
 function normalize(raw) {
-  const feedback =
-    typeof raw.feedback === "string" ? raw.feedback.trim() : "";
+  const feedback = typeof raw.feedback === "string" ? raw.feedback.trim() : "";
 
   const suggestedQuestions = Array.isArray(raw.suggested_questions)
     ? raw.suggested_questions.slice(0, 3).map(String).filter(Boolean)
@@ -101,10 +100,10 @@ function normalize(raw) {
   }
 
   return {
-    source:              "llm",
+    source: "llm",
     feedback,
     suggested_questions: suggestedQuestions,
-    info_card:           infoCard,
+    info_card: infoCard,
   };
 }
 
@@ -131,7 +130,7 @@ function createGeminiAnalyzer(apiKey, modelName) {
     systemInstruction: SYSTEM_PROMPT,
     generationConfig: {
       responseMimeType: "application/json",
-      responseSchema:   RESPONSE_SCHEMA,
+      responseSchema: RESPONSE_SCHEMA,
     },
   });
 
@@ -180,10 +179,11 @@ function createOpenAiAnalyzer(apiKey, modelName) {
           model: modelName,
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
-            { role: "user",   content: userPrompt },
+            { role: "user", content: userPrompt },
           ],
           response_format: { type: "json_object" },
-          // temperature omitted — gpt-5-mini only supports the default value (1)
+          max_tokens: 300,  // cap output — schema fits in ~180 tokens; prevents padding
+          // temperature omitted — gpt-5-nano only supports the default value (1)
         }),
         TIMEOUT_MS,
       );
@@ -217,7 +217,7 @@ function createOpenAiAnalyzer(apiKey, modelName) {
  * @returns {{ analyze: Function } | null}
  */
 export function createLlmAnalyzer({
-  provider    = "gemini",
+  provider = "gemini",
   geminiKey,
   openaiKey,
   geminiModel,
@@ -225,7 +225,9 @@ export function createLlmAnalyzer({
 } = {}) {
   if (provider === "openai") {
     if (!openaiKey) {
-      console.warn("[LLM] LLM_PROVIDER=openai but OPENAI_API_KEY not set — LLM disabled");
+      console.warn(
+        "[LLM] LLM_PROVIDER=openai but OPENAI_API_KEY not set — LLM disabled",
+      );
       return null;
     }
     const model = openaiModel ?? DEFAULT_OPENAI_MODEL;

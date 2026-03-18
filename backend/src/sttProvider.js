@@ -96,11 +96,14 @@ export function createSttProvider({
       console.log(`[STT] Deepgram event type:${data.type}`, JSON.stringify(data));
     }
 
-    // Only process final, speech-final transcript events
+    // Accept any is_final result — speech_final is NOT required.
+    // speech_final only fires on silence gaps (endpointing: 300ms), which
+    // rarely occur in continuous browser/Jitsi audio. With interim_results:false
+    // every event Deepgram sends already has is_final=true, so all segments are
+    // non-overlapping committed transcripts.
     if (
       data.type === 'Results' &&
-      data.is_final === true &&
-      data.speech_final === true
+      data.is_final === true
     ) {
       const text = data.channel?.alternatives?.[0]?.transcript ?? '';
       if (text.trim()) {
