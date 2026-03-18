@@ -84,7 +84,7 @@ const server = http.createServer(app);
 // ── WebSocket servers (noServer — path-based routing via server upgrade) ──
 // wss    → browser clients (default path)
 // wssTwilio → Twilio MediaStream (/twilio-stream)
-const wss       = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true });
 const wssTwilio = new WebSocketServer({ noServer: true });
 
 server.on("upgrade", (req, socket, head) => {
@@ -114,16 +114,16 @@ let activeCall = null;
 
 // ── HTTP routes ───────────────────────────────────────────────────
 const statusPayload = () => ({
-  service:   "sales-call-coach-backend",
-  status:    "ok",
+  service: "sales-call-coach-backend",
+  status: "ok",
   websocket: "ready",
-  llm:       llmAnalyzer ? "enabled" : "rule-only",
-  clients:   wss.clients.size,
+  llm: llmAnalyzer ? "enabled" : "rule-only",
+  clients: wss.clients.size,
   activeCall: !!activeCall,
   timestamp: Date.now(),
 });
 
-app.get("/",       (_req, res) => res.json(statusPayload()));
+app.get("/", (_req, res) => res.json(statusPayload()));
 app.get("/health", (_req, res) => res.json(statusPayload()));
 
 // POST /twiml — returns TwiML that instructs Twilio to stream audio here.
@@ -186,10 +186,10 @@ const twilioHandler = createTwilioStreamHandler({
     console.log(`[CALL] Started — sid:${callSid} lang:${lang}`);
 
     // Build per-call session + analysis pipeline
-    const session    = createTranscriptSession();
+    const session = createTranscriptSession();
     const heuristics = createHeuristicsEngine();
-    let   isLlmBusy  = false;
-    let   lastFeedback = "";
+    let isLlmBusy = false;
+    let lastFeedback = "";
 
     const trigger = createAnalysisTrigger({
       batchSize: 2,
@@ -197,13 +197,16 @@ const twilioHandler = createTwilioStreamHandler({
 
       onImmediate(sess) {
         const signal = heuristics.run({
-          latest:         sess.getLatest(),
-          previous:       sess.getPrevious(),
-          contextWindow:  sess.getContextWindow(),
+          latest: sess.getLatest(),
+          previous: sess.getPrevious(),
+          contextWindow: sess.getContextWindow(),
           utteranceCount: sess.getCount(),
         });
         if (signal) {
-          console.log(`[CALL:HEURISTIC] ${signal.tone_alert.type}`, signal._debug ?? "");
+          console.log(
+            `[CALL:HEURISTIC] ${signal.tone_alert.type}`,
+            signal._debug ?? "",
+          );
           broadcastToBrowserClients(WS_EVENTS.ANALYSIS_UPDATE, signal);
         }
       },
@@ -223,7 +226,11 @@ const twilioHandler = createTwilioStreamHandler({
             `[CALL:LLM] Response in ${elapsed}ms — feedback:"${result.feedback}" questions:${result.suggested_questions.length}`,
           );
           if (result.feedback) lastFeedback = result.feedback;
-          if (result.feedback || result.suggested_questions.length > 0 || result.info_card) {
+          if (
+            result.feedback ||
+            result.suggested_questions.length > 0 ||
+            result.info_card
+          ) {
             broadcastToBrowserClients(WS_EVENTS.ANALYSIS_UPDATE, result);
           }
         } catch (err) {
@@ -244,7 +251,12 @@ const twilioHandler = createTwilioStreamHandler({
   onTranscript({ text, lang, ts, speaker }) {
     if (!activeCall) return;
 
-    const utterance = activeCall.session.addUtterance({ text, lang, ts, speaker });
+    const utterance = activeCall.session.addUtterance({
+      text,
+      lang,
+      ts,
+      speaker,
+    });
     console.log(
       `[CALL:TRANSCRIPT] #${activeCall.session.getCount()} (${utterance.lang}) [${speaker}] "${utterance.text}"`,
     );
@@ -275,7 +287,7 @@ wss.on("connection", (ws) => {
   console.log("[WS] Client connected");
 
   // Per-connection state
-  const session    = createTranscriptSession();
+  const session = createTranscriptSession();
   const heuristics = createHeuristicsEngine();
 
   // Browser-call audio stream handler (browser-call mode)
@@ -285,8 +297,15 @@ wss.on("connection", (ws) => {
       wsSend(ws, WS_EVENTS.AUDIO_ERROR, { reason });
     },
     onTranscript({ text, lang }) {
-      const utterance = session.addUtterance({ text, lang, ts: Date.now(), speaker: 'unknown' });
-      console.log(`[AUDIO] #${session.getCount()} (${utterance.lang}) "${utterance.text}"`);
+      const utterance = session.addUtterance({
+        text,
+        lang,
+        ts: Date.now(),
+        speaker: "unknown",
+      });
+      console.log(
+        `[AUDIO] #${session.getCount()} (${utterance.lang}) "${utterance.text}"`,
+      );
       // Echo transcript to the frontend so the transcript panel populates
       wsSend(ws, WS_EVENTS.TRANSCRIPT_FINAL, { text, lang });
       trigger.onFinal(session);
@@ -307,9 +326,9 @@ wss.on("connection", (ws) => {
     // ── Immediate path: heuristics ────────────────────────
     onImmediate(sess) {
       const signal = heuristics.run({
-        latest:         sess.getLatest(),
-        previous:       sess.getPrevious(),
-        contextWindow:  sess.getContextWindow(),
+        latest: sess.getLatest(),
+        previous: sess.getPrevious(),
+        contextWindow: sess.getContextWindow(),
         utteranceCount: sess.getCount(),
       });
 
@@ -377,7 +396,7 @@ wss.on("connection", (ws) => {
         const utterance = session.addUtterance({
           text: line.text,
           lang: line.lang,
-          ts:   Date.now(),
+          ts: Date.now(),
         });
         console.log(`[DEMO] #${session.getCount()} "${utterance.text}"`);
         // Mirror to frontend transcript so the UI shows the scripted text
@@ -435,7 +454,7 @@ wss.on("connection", (ws) => {
         session.reset();
         trigger.reset();
         heuristics.reset();
-        isLlmBusy   = false;
+        isLlmBusy = false;
         lastFeedback = "";
         audioStream.handleStart(payload?.lang ?? "tr-TR");
         break;
@@ -483,5 +502,7 @@ wss.on("connection", (ws) => {
 server.listen(PORT, () => {
   console.log(`[SERVER] Running on http://localhost:${PORT}`);
   console.log(`[SERVER] WebSocket ready on ws://localhost:${PORT}`);
-  console.log(`[SERVER] Twilio stream ready on ws://localhost:${PORT}/twilio-stream`);
+  console.log(
+    `[SERVER] Twilio stream ready on ws://localhost:${PORT}/twilio-stream`,
+  );
 });

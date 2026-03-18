@@ -96,20 +96,32 @@ export function useTabAudio({ send, sendBinary }) {
       setError(null);
 
       // ── 1. Ask the user to share a tab / window / screen with audio ──
+      // video:true is required to open the picker on all platforms (including macOS).
+      // video:false throws TypeError immediately on macOS Chrome before the picker opens.
+      // Video tracks are stopped right after to avoid unnecessary screen capture.
       setCaptureStatus('requesting');
       let stream;
       try {
         stream = await navigator.mediaDevices.getDisplayMedia({
-          video: false,
+          video: true,
           audio: true,
           // Chrome 107+ hint — preselects the current tab in the picker
           preferCurrentTab: true,
         });
       } catch (err) {
         setCaptureStatus(null);
-        setError(err.name === 'NotAllowedError' ? 'not-allowed' : 'error');
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          setError('not-allowed');
+        } else if (err.name === 'NotSupportedError' || err.name === 'TypeError') {
+          setError('unsupported');
+        } else {
+          setError('error');
+        }
         return;
       }
+
+      // Stop video tracks — only audio is needed for coaching
+      stream.getVideoTracks().forEach((t) => t.stop());
 
       // ── 2. Guard: make sure we actually got audio ──────────────────
       const audioTracks = stream.getAudioTracks();
@@ -120,14 +132,25 @@ export function useTabAudio({ send, sendBinary }) {
         return;
       }
 
+      // Keep original stream reference for cleanup; record audio-only stream
       streamRef.current = stream;
+      const audioOnlyStream = new MediaStream(audioTracks);
 
       // ── 3. Tell the backend a new session is starting ─────────────
       send(WS_EVENTS.AUDIO_START, { lang });
 
       // ── 4. Start MediaRecorder ────────────────────────────────────
       const mimeType = pickMimeType();
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+      let recorder;
+      try {
+        recorder = new MediaRecorder(audioOnlyStream, mimeType ? { mimeType } : {});
+      } catch {
+        setCaptureStatus(null);
+        stream.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+        setError('recorder-error');
+        return;
+      }
       recorderRef.current = recorder;
 
       recorder.ondataavailable = async (e) => {
@@ -143,6 +166,15 @@ export function useTabAudio({ send, sendBinary }) {
         setCaptureStatus('stopped');
       };
 
+      recorder.onerror = () => {
+        setError('recorder-error');
+        setIsCapturing(false);
+        setCaptureStatus(null);
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+        streamRef.current  = null;
+        recorderRef.current = null;
+      };
+
       // User clicks the browser's built-in "Stop sharing" button
       audioTracks[0].onended = () => {
         if (recorderRef.current?.state !== 'inactive') {
@@ -152,7 +184,16 @@ export function useTabAudio({ send, sendBinary }) {
         setCaptureStatus('stopped');
       };
 
-      recorder.start(TIMESLICE_MS);
+      try {
+        recorder.start(TIMESLICE_MS);
+      } catch {
+        setCaptureStatus(null);
+        stream.getTracks().forEach((t) => t.stop());
+        streamRef.current  = null;
+        recorderRef.current = null;
+        setError('recorder-error');
+        return;
+      }
       setIsCapturing(true);
       setCaptureStatus('capturing');
     },

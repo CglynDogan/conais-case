@@ -27,11 +27,14 @@ const MIC_ERROR_MSG = {
 };
 
 const CAPTURE_ERROR_MSG = {
-  'not-allowed':              'Screen sharing denied. Allow access when prompted.',
-  'no-audio':                 'No audio captured. Enable "Share audio" when selecting the tab.',
-  unsupported:                'getDisplayMedia is not supported in this browser. Use Chrome.',
+  'not-allowed':              'Tab sharing cancelled or denied. Try again and allow access.',
+  'no-audio':                 'No audio captured. Check the "Share audio" box when selecting the tab.',
+  unsupported:                'Tab audio capture is not supported on this platform. Try Chrome on Windows.',
+  'recorder-error':           'MediaRecorder failed to start. Try a different tab or reload.',
   error:                      'Audio capture failed unexpectedly.',
   'deepgram-not-configured':  'Deepgram API key not set — transcription unavailable.',
+  'stt-error':                'Transcription error — audio stream interrupted.',
+  'stt-disconnected':         'Transcription stream disconnected unexpectedly.',
 };
 
 const CAPTURE_STATUS_MSG = {

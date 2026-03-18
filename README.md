@@ -363,7 +363,7 @@ Only the highest-priority signal not on cooldown is sent per utterance. Cooldown
 
 ## Known Limitations
 
-- **Chrome only** — `getDisplayMedia` audio capture and Web Speech API are Chrome-specific
+- **Browser Call requires Chrome on Windows** — tab audio via `getDisplayMedia` is not supported on macOS Chrome; mic mode works on macOS
 - **Internet required** — Web Speech API sends audio to Google's servers; Deepgram requires network access
 - **No speaker diarization** — all speech is treated as a single speaker stream
 - **LLM latency** — Gemini responses typically take 1–3 s; the 5 s timeout is generous but visible under load

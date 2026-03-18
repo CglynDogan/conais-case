@@ -56,11 +56,15 @@ export function createAudioStreamHandler({ apiKey, onTranscript, onError }) {
 
     stt.on('error', (err) => {
       console.error('[AUDIO] STT error:', err.message);
+      onError?.('stt-error');
     });
 
     stt.on('close', () => {
+      const wasActive = active;
       active = false;
       stt    = null;
+      // Unexpected close while capture was still running
+      if (wasActive) onError?.('stt-disconnected');
     });
 
     console.log(`[AUDIO] Stream started (lang:${lang})`);
