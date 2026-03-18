@@ -48,14 +48,23 @@ export function createSttProvider({
     punctuate:       'true',
     interim_results: 'false',
     endpointing:     '300',
-    encoding,
-    sample_rate:     String(sampleRate),
   };
-  if (container) paramObj.container = container;
+
+  if (container) {
+    // Container format (e.g. WebM/Opus from browser MediaRecorder).
+    // encoding and sample_rate are embedded in the container header.
+    // Deepgram closes with 1011 if encoding is also sent — they are mutually exclusive.
+    paramObj.container = container;
+  } else {
+    // Raw audio (e.g. Twilio mulaw): encoding and sample_rate must be explicit.
+    paramObj.encoding    = encoding;
+    paramObj.sample_rate = String(sampleRate);
+  }
 
   const params = new URLSearchParams(paramObj);
 
   const url = `${DEEPGRAM_URL}?${params.toString()}`;
+  console.log(`[STT] Connecting — model:${model} lang:${langCode} params:${params.toString()}`);
 
   // Audio frames that arrive before the Deepgram WS is open are queued here
   // and flushed on 'open'. Cap at 200 chunks (~4s at 50 frames/sec) to bound memory.
@@ -82,6 +91,11 @@ export function createSttProvider({
       return;
     }
 
+    // Log anything that isn't a Results event — errors, metadata, warnings
+    if (data.type !== 'Results') {
+      console.log(`[STT] Deepgram event type:${data.type}`, JSON.stringify(data));
+    }
+
     // Only process final, speech-final transcript events
     if (
       data.type === 'Results' &&
@@ -101,7 +115,8 @@ export function createSttProvider({
   });
 
   dg.on('close', (code, reason) => {
-    console.log(`[STT] Deepgram connection closed (${code})`);
+    const reasonStr = reason?.toString?.() || '';
+    console.log(`[STT] Deepgram connection closed (${code})${reasonStr ? ` — ${reasonStr}` : ''}`);
     pendingChunks.length = 0;
     emitter.emit('close');
   });

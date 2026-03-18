@@ -30,6 +30,7 @@ export function createAudioStreamHandler({ apiKey, onTranscript, onError }) {
   let stt         = null;
   let active      = false;
   let currentLang = 'tr-TR';
+  let chunkCount  = 0;
 
   function handleStart(lang = 'tr-TR') {
     if (!apiKey) {
@@ -46,6 +47,7 @@ export function createAudioStreamHandler({ apiKey, onTranscript, onError }) {
 
     currentLang = lang;
     active      = true;
+    chunkCount  = 0;
 
     // Browser MediaRecorder produces WebM/Opus — use browser-format defaults
     stt = createSttProvider({ apiKey, language: lang });
@@ -71,6 +73,12 @@ export function createAudioStreamHandler({ apiKey, onTranscript, onError }) {
   }
 
   function handleChunk(data) {
+    chunkCount++;
+    if (chunkCount <= 3) {
+      console.log(`[AUDIO] Chunk #${chunkCount}: ${data?.byteLength ?? 0} bytes`);
+    } else if (chunkCount === 4) {
+      console.log('[AUDIO] Chunk logging suppressed — stream flowing');
+    }
     stt?.write(data);
   }
 

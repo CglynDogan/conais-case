@@ -154,9 +154,15 @@ export function useTabAudio({ send, sendBinary }) {
         return;
       }
       recorderRef.current = recorder;
+      console.log(`[TAB_AUDIO] MediaRecorder mimeType: "${recorder.mimeType}"`);
 
+      let frontendChunkCount = 0;
       recorder.ondataavailable = async (e) => {
         if (e.data.size > 0) {
+          frontendChunkCount++;
+          if (frontendChunkCount <= 3) {
+            console.log(`[TAB_AUDIO] Chunk #${frontendChunkCount}: ${e.data.size} bytes`);
+          }
           const buffer = await e.data.arrayBuffer();
           sendBinary(buffer);
         }
