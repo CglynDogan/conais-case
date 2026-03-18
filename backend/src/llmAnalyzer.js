@@ -173,6 +173,7 @@ function createOpenAiAnalyzer(apiKey, modelName) {
     const userPrompt = buildUserPrompt({ session, lastFeedback });
 
     let raw;
+    let finishReason = "";
     try {
       const completion = await withTimeout(
         client.chat.completions.create({
@@ -187,14 +188,37 @@ function createOpenAiAnalyzer(apiKey, modelName) {
         }),
         TIMEOUT_MS,
       );
-      raw = safeParseJson(completion.choices[0].message.content ?? "");
+      const choice = completion.choices[0];
+      finishReason = choice?.finish_reason ?? "";
+      const msg = choice?.message;
+
+      // Extract text content from all known response shapes:
+      //   1. string  — standard json_object mode (most models)
+      //   2. array   — content-block format used by some newer OpenAI models
+      //   3. null    — model refused or was filtered (refusal field has reason)
+      const rawContent = msg?.content;
+      let contentStr = "";
+      if (typeof rawContent === "string") {
+        contentStr = rawContent;
+      } else if (Array.isArray(rawContent)) {
+        // Find the first text block in a content-part array
+        const textPart = rawContent.find((b) => b?.type === "text");
+        contentStr = textPart?.text ?? rawContent.map((b) => b?.text ?? "").filter(Boolean).join("");
+      }
+
+      console.log(`[LLM] OpenAI message — finish_reason:${finishReason} content-shape:${Array.isArray(rawContent) ? "array(" + rawContent.length + ")" : typeof rawContent} extracted-len:${contentStr.length}`);
+      if (!contentStr && msg?.refusal) {
+        console.warn("[LLM] OpenAI refusal:", msg.refusal);
+      }
+
+      raw = safeParseJson(contentStr);
     } catch (err) {
       console.warn("[LLM] OpenAI call failed:", err.message);
       return SAFE_FALLBACK;
     }
 
     if (!raw) {
-      console.warn("[LLM] Could not parse OpenAI response");
+      console.warn(`[LLM] Could not parse OpenAI response — finish_reason:${finishReason}`);
       return SAFE_FALLBACK;
     }
 
