@@ -111,7 +111,15 @@ export default function App() {
 
     if (msg.type === WS_EVENTS.ANALYSIS_UPDATE) {
       if (msg.payload?.source === 'rule') setRuleSignal(msg.payload);
-      if (msg.payload?.source === 'llm')  setLlmResult(msg.payload);
+      if (msg.payload?.source === 'llm') {
+        setLlmResult((prev) => ({
+          ...msg.payload,
+          // Retain previous non-empty feedback/questions if the new result is empty
+          feedback:            msg.payload.feedback?.trim()              || prev?.feedback            || '',
+          suggested_questions: msg.payload.suggested_questions?.length   ? msg.payload.suggested_questions
+                                                                         : (prev?.suggested_questions ?? []),
+        }));
+      }
     }
     if (msg.type === WS_EVENTS.TRANSCRIPT_FINAL && msg.payload?.text) {
       setDemoLines((prev) => [...prev, msg.payload.text]);
