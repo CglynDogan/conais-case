@@ -182,7 +182,7 @@ function createOpenAiAnalyzer(apiKey, modelName) {
             { role: "user", content: userPrompt },
           ],
           response_format: { type: "json_object" },
-          max_tokens: 300,  // cap output — schema fits in ~180 tokens; prevents padding
+          max_completion_tokens: 300,  // cap output — schema fits in ~180 tokens; prevents padding
           // temperature omitted — gpt-5-nano only supports the default value (1)
         }),
         TIMEOUT_MS,
