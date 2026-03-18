@@ -29,16 +29,15 @@
  *      which will be added in Phase 4).
  */
 
-const BATCH_SIZE  = 3;       // finals accumulated since last batch trigger
-const SILENCE_MS  = 3_000;   // quiet window (ms) before a forced batch trigger
-
 /**
  * @param {{
  *   onImmediate: (session: object) => void,
  *   onBatch:     (session: object) => void,
+ *   batchSize?:  number,   // finals before LLM trigger (default 3; Twilio path uses 2)
+ *   silenceMs?:  number,   // quiet window before forced trigger (default 3000; Twilio uses 1500)
  * }} callbacks
  */
-export function createAnalysisTrigger({ onImmediate, onBatch }) {
+export function createAnalysisTrigger({ onImmediate, onBatch, batchSize = 3, silenceMs = 3_000 }) {
   let pendingCount = 0;
   let silenceTimer = null;
 
@@ -51,7 +50,7 @@ export function createAnalysisTrigger({ onImmediate, onBatch }) {
     clearTimeout(silenceTimer);
     silenceTimer = setTimeout(() => {
       if (pendingCount > 0) fireBatch(session);
-    }, SILENCE_MS);
+    }, silenceMs);
   }
 
   /**
@@ -65,7 +64,7 @@ export function createAnalysisTrigger({ onImmediate, onBatch }) {
     // Batched path — count toward next LLM trigger
     pendingCount += 1;
 
-    if (pendingCount >= BATCH_SIZE) {
+    if (pendingCount >= batchSize) {
       clearTimeout(silenceTimer);
       fireBatch(session);
     } else {

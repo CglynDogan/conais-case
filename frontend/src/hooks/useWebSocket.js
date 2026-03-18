@@ -63,6 +63,15 @@ export function useWebSocket(onMessage) {
     }
   }, []);
 
+  // Send raw binary data (ArrayBuffer / Blob) — used for audio streaming
+  const sendBinary = useCallback((data) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(data);
+    } else {
+      console.warn('[WS] Cannot send binary — not connected');
+    }
+  }, []);
+
   useEffect(() => {
     connect();
     return () => {
@@ -71,5 +80,5 @@ export function useWebSocket(onMessage) {
     };
   }, [connect]);
 
-  return { status, send };
+  return { status, send, sendBinary };
 }

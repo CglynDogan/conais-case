@@ -42,4 +42,22 @@ export const WS_EVENTS = {
 
   /** General status message (e.g. "buffer flushed", "LLM timeout"). */
   SYSTEM_STATUS: 'system:status',
+
+  // ── Browser audio streaming (client → server) ─────────────────
+  /** Browser-call mode starting. payload: { lang } — resets session on server. */
+  AUDIO_START: 'audio:start',
+
+  /** Browser audio stream ending. payload: {} */
+  AUDIO_STOP: 'audio:stop',
+
+  // ── Browser audio streaming (server → client) ─────────────────
+  /** Server-side audio error (e.g. Deepgram key missing). payload: { reason } */
+  AUDIO_ERROR: 'audio:error',
+
+  // ── Twilio call lifecycle (server → client) ────────────────────
+  /** A Twilio call has connected and STT is active. payload: { callSid, lang } */
+  CALL_STARTED: 'call:started',
+
+  /** The active Twilio call has ended. payload: {} */
+  CALL_ENDED: 'call:ended',
 };

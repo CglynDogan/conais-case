@@ -7,6 +7,8 @@ import { createTranscriptSession } from "./transcriptSession.js";
 import { createHeuristicsEngine } from "./heuristics.js";
 import { createAnalysisTrigger } from "./analysisTrigger.js";
 import { createLlmAnalyzer, SAFE_FALLBACK } from "./llmAnalyzer.js";
+import { createAudioStreamHandler } from "./audioStream.js";
+import { createTwilioStreamHandler } from "./twilioStream.js";
 
 // ── Demo scripts ─────────────────────────────────────────────────────
 // Scripted utterances replayed through the real pipeline on demo:trigger.
@@ -71,11 +73,31 @@ const DEMO_SCRIPT_EN = [
 
 const DEMO_SCRIPTS = { "tr-TR": DEMO_SCRIPT_TR, "en-US": DEMO_SCRIPT_EN };
 
+// ── Twilio stream URL (required for /twiml endpoint) ────────────────
+const TWILIO_STREAM_URL = process.env.TWILIO_STREAM_URL ?? "";
+
 const app = express();
 app.use(express.json());
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+
+// ── WebSocket servers (noServer — path-based routing via server upgrade) ──
+// wss    → browser clients (default path)
+// wssTwilio → Twilio MediaStream (/twilio-stream)
+const wss       = new WebSocketServer({ noServer: true });
+const wssTwilio = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  if (req.url === "/twilio-stream") {
+    wssTwilio.handleUpgrade(req, socket, head, (ws) => {
+      wssTwilio.emit("connection", ws, req);
+    });
+  } else {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
+  }
+});
 
 // ── LLM analyzer (shared — stateless, safe to share across connections) ──
 const llmAnalyzer = createLlmAnalyzer(process.env.GEMINI_API_KEY);
@@ -85,18 +107,55 @@ if (llmAnalyzer) {
   console.log("[LLM] No API key — running in rule-only mode");
 }
 
+// ── Active call state ────────────────────────────────────────────────
+// One active call per server instance. Bridges the Twilio stream to all
+// connected browser clients. null when no call is in progress.
+let activeCall = null;
+
 // ── HTTP routes ───────────────────────────────────────────────────
 const statusPayload = () => ({
-  service: "sales-call-coach-backend",
-  status: "ok",
+  service:   "sales-call-coach-backend",
+  status:    "ok",
   websocket: "ready",
-  llm: llmAnalyzer ? "enabled" : "rule-only",
-  clients: wss.clients.size,
+  llm:       llmAnalyzer ? "enabled" : "rule-only",
+  clients:   wss.clients.size,
+  activeCall: !!activeCall,
   timestamp: Date.now(),
 });
 
-app.get("/", (_req, res) => res.json(statusPayload()));
+app.get("/",       (_req, res) => res.json(statusPayload()));
 app.get("/health", (_req, res) => res.json(statusPayload()));
+
+// POST /twiml — returns TwiML that instructs Twilio to stream audio here.
+// Twilio dials this endpoint when a call is placed to the configured number.
+//
+// Language selection priority:
+//   1. ?lang= query param on the webhook URL  (e.g. configure Twilio as /twiml?lang=en-US)
+//   2. TWILIO_CALL_LANG env var
+//   3. hard default 'tr-TR'
+app.post("/twiml", (req, res) => {
+  if (!TWILIO_STREAM_URL) {
+    console.warn("[TWIML] TWILIO_STREAM_URL not set — returning empty TwiML");
+    res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>Configuration error: stream URL not set.</Say>
+</Response>`);
+    return;
+  }
+
+  const lang = req.query.lang ?? process.env.TWILIO_CALL_LANG ?? "tr-TR";
+  console.log(`[TWIML] Responding with lang:${lang}`);
+
+  res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${TWILIO_STREAM_URL}" track="inbound_track">
+      <Parameter name="lang" value="${lang}" />
+    </Stream>
+  </Connect>
+  <Pause length="60" />
+</Response>`);
+});
 
 // ── Helper: safe WS send ─────────────────────────────────────────
 function wsSend(ws, type, payload) {
@@ -105,12 +164,134 @@ function wsSend(ws, type, payload) {
   }
 }
 
+// ── Helper: broadcast to all connected browser clients ───────────
+function broadcastToBrowserClients(type, payload) {
+  for (const client of wss.clients) {
+    wsSend(client, type, payload);
+  }
+}
+
+// ── Twilio stream handler ────────────────────────────────────────
+const twilioHandler = createTwilioStreamHandler({
+  apiKey: process.env.DEEPGRAM_API_KEY ?? "",
+
+  onCallStarted({ callSid, lang }) {
+    if (activeCall) {
+      console.warn(
+        `[CALL] Rejecting call ${callSid} — call ${activeCall.callSid} is already active`,
+      );
+      return false;
+    }
+
+    console.log(`[CALL] Started — sid:${callSid} lang:${lang}`);
+
+    // Build per-call session + analysis pipeline
+    const session    = createTranscriptSession();
+    const heuristics = createHeuristicsEngine();
+    let   isLlmBusy  = false;
+    let   lastFeedback = "";
+
+    const trigger = createAnalysisTrigger({
+      batchSize: 2,
+      silenceMs: 1500,
+
+      onImmediate(sess) {
+        const signal = heuristics.run({
+          latest:         sess.getLatest(),
+          previous:       sess.getPrevious(),
+          contextWindow:  sess.getContextWindow(),
+          utteranceCount: sess.getCount(),
+        });
+        if (signal) {
+          console.log(`[CALL:HEURISTIC] ${signal.tone_alert.type}`, signal._debug ?? "");
+          broadcastToBrowserClients(WS_EVENTS.ANALYSIS_UPDATE, signal);
+        }
+      },
+
+      async onBatch(sess) {
+        if (!llmAnalyzer) return;
+        if (isLlmBusy) {
+          console.log("[CALL:LLM] Skipping batch — previous call in flight");
+          return;
+        }
+        isLlmBusy = true;
+        const startMs = Date.now();
+        try {
+          const result = await llmAnalyzer.analyze(sess, { lastFeedback });
+          const elapsed = Date.now() - startMs;
+          console.log(
+            `[CALL:LLM] Response in ${elapsed}ms — feedback:"${result.feedback}" questions:${result.suggested_questions.length}`,
+          );
+          if (result.feedback) lastFeedback = result.feedback;
+          if (result.feedback || result.suggested_questions.length > 0 || result.info_card) {
+            broadcastToBrowserClients(WS_EVENTS.ANALYSIS_UPDATE, result);
+          }
+        } catch (err) {
+          // Do not broadcast SAFE_FALLBACK — it would clear currently displayed coaching.
+          // llmAnalyzer catches internally and returns SAFE_FALLBACK; this path is a last resort.
+          console.error("[CALL:LLM] Unexpected error:", err.message);
+        } finally {
+          isLlmBusy = false;
+        }
+      },
+    });
+
+    activeCall = { callSid, lang, session, heuristics, trigger };
+
+    broadcastToBrowserClients(WS_EVENTS.CALL_STARTED, { callSid, lang });
+  },
+
+  onTranscript({ text, lang, ts, speaker }) {
+    if (!activeCall) return;
+
+    const utterance = activeCall.session.addUtterance({ text, lang, ts, speaker });
+    console.log(
+      `[CALL:TRANSCRIPT] #${activeCall.session.getCount()} (${utterance.lang}) [${speaker}] "${utterance.text}"`,
+    );
+
+    // Mirror transcript to browser clients so the UI shows the call text
+    broadcastToBrowserClients(WS_EVENTS.TRANSCRIPT_FINAL, { text, lang });
+
+    activeCall.trigger.onFinal(activeCall.session);
+  },
+
+  onCallEnded() {
+    if (!activeCall) return;
+    console.log(`[CALL] Ended — sid:${activeCall.callSid}`);
+    activeCall.trigger.reset();
+    activeCall.heuristics.reset();
+    activeCall = null;
+    broadcastToBrowserClients(WS_EVENTS.CALL_ENDED, {});
+  },
+});
+
+wssTwilio.on("connection", (ws) => {
+  console.log("[WS:TWILIO] MediaStream connection");
+  twilioHandler(ws);
+});
+
+// ── Browser WebSocket connections ────────────────────────────────
 wss.on("connection", (ws) => {
   console.log("[WS] Client connected");
 
   // Per-connection state
-  const session = createTranscriptSession();
+  const session    = createTranscriptSession();
   const heuristics = createHeuristicsEngine();
+
+  // Browser-call audio stream handler (browser-call mode)
+  const audioStream = createAudioStreamHandler({
+    apiKey: process.env.DEEPGRAM_API_KEY ?? "",
+    onError(reason) {
+      wsSend(ws, WS_EVENTS.AUDIO_ERROR, { reason });
+    },
+    onTranscript({ text, lang }) {
+      const utterance = session.addUtterance({ text, lang, ts: Date.now(), speaker: 'unknown' });
+      console.log(`[AUDIO] #${session.getCount()} (${utterance.lang}) "${utterance.text}"`);
+      // Echo transcript to the frontend so the transcript panel populates
+      wsSend(ws, WS_EVENTS.TRANSCRIPT_FINAL, { text, lang });
+      trigger.onFinal(session);
+    },
+  });
 
   // isLlmBusy: prevents overlapping batch LLM calls on the same connection.
   // If a new batch trigger fires while a call is in-flight, it is skipped.
@@ -126,9 +307,9 @@ wss.on("connection", (ws) => {
     // ── Immediate path: heuristics ────────────────────────
     onImmediate(sess) {
       const signal = heuristics.run({
-        latest: sess.getLatest(),
-        previous: sess.getPrevious(),
-        contextWindow: sess.getContextWindow(),
+        latest:         sess.getLatest(),
+        previous:       sess.getPrevious(),
+        contextWindow:  sess.getContextWindow(),
         utteranceCount: sess.getCount(),
       });
 
@@ -175,9 +356,9 @@ wss.on("connection", (ws) => {
           wsSend(ws, WS_EVENTS.ANALYSIS_UPDATE, result);
         }
       } catch (err) {
-        // Should not reach here (llmAnalyzer catches internally), but just in case
+        // Do not broadcast SAFE_FALLBACK — it would clear currently displayed coaching.
+        // llmAnalyzer catches internally and returns SAFE_FALLBACK; this path is a last resort.
         console.error("[LLM] Unexpected error:", err.message);
-        wsSend(ws, WS_EVENTS.ANALYSIS_UPDATE, SAFE_FALLBACK);
       } finally {
         isLlmBusy = false;
       }
@@ -196,7 +377,7 @@ wss.on("connection", (ws) => {
         const utterance = session.addUtterance({
           text: line.text,
           lang: line.lang,
-          ts: Date.now(),
+          ts:   Date.now(),
         });
         console.log(`[DEMO] #${session.getCount()} "${utterance.text}"`);
         // Mirror to frontend transcript so the UI shows the scripted text
@@ -211,7 +392,13 @@ wss.on("connection", (ws) => {
   }
 
   // ── Message router ───────────────────────────────────────
-  ws.on("message", (raw) => {
+  ws.on("message", (raw, isBinary) => {
+    // Binary frames are audio chunks from browser-call mode
+    if (isBinary) {
+      audioStream.handleChunk(raw);
+      return;
+    }
+
     let msg;
     try {
       msg = JSON.parse(raw);
@@ -243,7 +430,24 @@ wss.on("connection", (ws) => {
         break;
       }
 
+      case WS_EVENTS.AUDIO_START: {
+        // Reset session for new browser-call, then start STT stream
+        session.reset();
+        trigger.reset();
+        heuristics.reset();
+        isLlmBusy   = false;
+        lastFeedback = "";
+        audioStream.handleStart(payload?.lang ?? "tr-TR");
+        break;
+      }
+
+      case WS_EVENTS.AUDIO_STOP:
+        audioStream.handleStop();
+        break;
+
       case WS_EVENTS.DEMO_TRIGGER:
+        // Stop any active audio stream before starting demo
+        audioStream.handleStop();
         // Clear any in-flight demo timers, reset all state
         for (const t of demoTimers) clearTimeout(t);
         demoTimers.length = 0;
@@ -265,6 +469,7 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     for (const t of demoTimers) clearTimeout(t);
+    audioStream.handleStop();
     trigger.reset();
     heuristics.reset();
     console.log("[WS] Client disconnected");
@@ -278,4 +483,5 @@ wss.on("connection", (ws) => {
 server.listen(PORT, () => {
   console.log(`[SERVER] Running on http://localhost:${PORT}`);
   console.log(`[SERVER] WebSocket ready on ws://localhost:${PORT}`);
+  console.log(`[SERVER] Twilio stream ready on ws://localhost:${PORT}/twilio-stream`);
 });

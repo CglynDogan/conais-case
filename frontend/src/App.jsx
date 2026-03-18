@@ -1,6 +1,7 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
+import { useTabAudio } from './hooks/useTabAudio';
 import { TranscriptBar } from './components/TranscriptBar';
 import { WS_EVENTS } from './constants';
 import './App.css';
@@ -25,6 +26,20 @@ const MIC_ERROR_MSG = {
   error:         'Speech recognition stopped unexpectedly.',
 };
 
+const CAPTURE_ERROR_MSG = {
+  'not-allowed':              'Screen sharing denied. Allow access when prompted.',
+  'no-audio':                 'No audio captured. Enable "Share audio" when selecting the tab.',
+  unsupported:                'getDisplayMedia is not supported in this browser. Use Chrome.',
+  error:                      'Audio capture failed unexpectedly.',
+  'deepgram-not-configured':  'Deepgram API key not set — transcription unavailable.',
+};
+
+const CAPTURE_STATUS_MSG = {
+  requesting: 'Waiting for tab selection…',
+  capturing:  'Streaming tab audio',
+  stopped:    'Capture stopped',
+};
+
 // Rule-based signal colors and labels
 const TONE_COLOR = {
   price_objection: '#ef4444',
@@ -38,6 +53,9 @@ const TONE_LABEL = {
 };
 
 const LANGUAGES = ['tr-TR', 'en-US'];
+
+// Rule-based signal auto-clears after this many ms to avoid stale hints
+const RULE_HINT_TTL_MS = 8_000;
 
 // ── App ──────────────────────────────────────────────────────────────
 
@@ -54,6 +72,33 @@ export default function App() {
   const [demoLines, setDemoLines]   = useState([]);
   const [isDemoMode, setIsDemoMode] = useState(false);
 
+  // ── Twilio call state ───────────────────────────────────────────
+  // null when no call active; { callSid, lang } when a Twilio call is live
+  const [callState,   setCallState]   = useState(null);
+  const [callElapsed, setCallElapsed] = useState(0);
+
+  // Auto-clear rule hint after TTL to avoid stale signals
+  useEffect(() => {
+    if (!ruleSignal) return;
+    const id = setTimeout(() => setRuleSignal(null), RULE_HINT_TTL_MS);
+    return () => clearTimeout(id);
+  }, [ruleSignal]);
+
+  // Elapsed timer — counts seconds while a call is active
+  useEffect(() => {
+    if (!callState) {
+      setCallElapsed(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setCallElapsed((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [callState]);
+
+  // ── Audio error (server-side: e.g. Deepgram key missing) ───────
+  const [audioError, setAudioError] = useState(null);
+
   // ── Last WS event (system panel) ───────────────────────────────
   const [lastEventSummary, setLastEventSummary] = useState(null);
 
@@ -68,9 +113,19 @@ export default function App() {
     if (msg.type === WS_EVENTS.TRANSCRIPT_FINAL && msg.payload?.text) {
       setDemoLines((prev) => [...prev, msg.payload.text]);
     }
+    if (msg.type === WS_EVENTS.CALL_STARTED) {
+      resetSession();
+      setCallState({ callSid: msg.payload?.callSid, lang: msg.payload?.lang });
+    }
+    if (msg.type === WS_EVENTS.CALL_ENDED) {
+      setCallState(null);
+    }
+    if (msg.type === WS_EVENTS.AUDIO_ERROR) {
+      setAudioError(msg.payload?.reason ?? 'error');
+    }
   }, []);
 
-  const { status: connStatus, send } = useWebSocket(handleWsMessage);
+  const { status: connStatus, send, sendBinary } = useWebSocket(handleWsMessage);
 
   // ── Speech recognition ──────────────────────────────────────────
   const handleFinalResult = useCallback(
@@ -93,6 +148,16 @@ export default function App() {
   const { isListening, interimText, error: micError, isSupported, start, stop } =
     useSpeechRecognition({ onFinalResult: handleFinalResult, onInterimResult: handleInterimResult });
 
+  // ── Browser-call mode (tab audio capture) ───────────────────────
+  const {
+    isCapturing,
+    captureStatus,
+    start:      startCapture,
+    stop:       stopCapture,
+    error:      captureError,
+    clearError: clearCaptureError,
+  } = useTabAudio({ send, sendBinary });
+
   // ── Controls ────────────────────────────────────────────────────
   const resetSession = () => {
     setRuleSignal(null);
@@ -105,6 +170,8 @@ export default function App() {
     if (isListening) {
       stop();
     } else {
+      clearCaptureError();
+      setAudioError(null);
       resetSession();
       setIsDemoMode(false);
       start(lang);
@@ -117,8 +184,25 @@ export default function App() {
     if (isListening) { stop(); setTimeout(() => start(next), 200); }
   };
 
+  const handleStartBrowserCall = async () => {
+    if (isListening) stop();
+    if (isCapturing) stopCapture();
+    clearCaptureError();
+    setAudioError(null);
+    resetSession();
+    setIsDemoMode(false);
+    await startCapture(lang);
+  };
+
+  const handleStopBrowserCall = () => {
+    stopCapture();
+  };
+
   const handleDemo = () => {
     if (isListening) stop();
+    if (isCapturing) stopCapture();
+    clearCaptureError();
+    setAudioError(null);
     resetSession();
     setIsDemoMode(true);
     send(WS_EVENTS.DEMO_TRIGGER, { lang });
@@ -129,7 +213,7 @@ export default function App() {
   const suggestions = llmResult?.suggested_questions ?? [];
   const infoCard    = llmResult?.info_card           ?? null;
 
-  const visibleLines = isDemoMode ? demoLines : finalLines;
+  const visibleLines = (isDemoMode || isCapturing || !!callState) ? demoLines : finalLines;
 
   // ── Render ───────────────────────────────────────────────────────
   return (
@@ -139,11 +223,17 @@ export default function App() {
       <header className="app-header">
         <h1 className="app-title">Sales Call Coach</h1>
         <div className="header-right">
+          {callState && (
+            <div className="conn-status" style={{ background: '#7c3aed' }} title={`Call SID: ${callState.callSid}`}>
+              <span className="conn-dot" style={{ background: '#fff', animation: 'pulse 1.2s infinite' }} />
+              Live Call {String(Math.floor(callElapsed / 60)).padStart(2, '0')}:{String(callElapsed % 60).padStart(2, '0')}
+            </div>
+          )}
           <button
             className="btn btn--demo"
             onClick={handleDemo}
-            disabled={connStatus !== 'connected'}
-            title="Run scripted demo"
+            disabled={connStatus !== 'connected' || !!callState}
+            title={callState ? 'Demo unavailable during a live call' : 'Run scripted demo'}
           >
             Demo
           </button>
@@ -223,26 +313,57 @@ export default function App() {
         <div className="panel panel--transcript">
           <div className="transcript-header">
             <span className="panel-label">
-              {isDemoMode ? 'Demo Transcript' : 'Live Transcript'}
+              {isDemoMode
+                ? 'Demo Transcript'
+                : isCapturing
+                  ? 'Browser Call'
+                  : callState
+                    ? 'Live Call Transcript'
+                    : 'Live Transcript'}
             </span>
             <div className="mic-controls">
-              {!isDemoMode && (
+              {/* Language toggle — hidden during demo or browser-call capture */}
+              {!isDemoMode && !isCapturing && (
                 <button className="btn btn--ghost" onClick={handleLangToggle} title="Toggle language">
                   {lang}
                 </button>
               )}
+
+              {/* Browser-call mode controls */}
               {!isDemoMode && (
+                isCapturing ? (
+                  <button className="btn btn--stop" onClick={handleStopBrowserCall}>
+                    ⏹ Stop Capture
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn--browser"
+                    onClick={handleStartBrowserCall}
+                    disabled={connStatus !== 'connected' || isListening || !!callState}
+                    title="Capture browser tab audio (Jitsi, Meet, etc.)"
+                  >
+                    🖥 Browser Call
+                  </button>
+                )
+              )}
+
+              {/* Mic mode controls — hidden while capturing or in demo */}
+              {!isDemoMode && !isCapturing && (
                 !isSupported ? (
                   <span className="mic-unsupported">Chrome required for microphone</span>
                 ) : (
                   <button
                     className={`btn ${isListening ? 'btn--stop' : 'btn--start'}`}
                     onClick={handleToggleListen}
+                    disabled={!!callState}
+                    title={callState ? 'Mic unavailable during a live call' : undefined}
                   >
                     {isListening ? '⏹ Stop' : '🎙 Start'}
                   </button>
                 )
               )}
+
+              {/* Demo exit */}
               {isDemoMode && (
                 <button className="btn btn--ghost" onClick={() => {
                   setIsDemoMode(false);
@@ -253,16 +374,26 @@ export default function App() {
               )}
             </div>
           </div>
+          {captureStatus && !captureError && !audioError && (
+            <p className="capture-status">{CAPTURE_STATUS_MSG[captureStatus]}</p>
+          )}
           {micError && (
             <p className="mic-error">{MIC_ERROR_MSG[micError] ?? 'Unknown microphone error.'}</p>
           )}
-          {(isListening || isDemoMode || visibleLines.length > 0) ? (
+          {(captureError || audioError) && (
+            <p className="mic-error">
+              {CAPTURE_ERROR_MSG[captureError ?? audioError] ?? 'Audio capture error.'}
+            </p>
+          )}
+          {(isListening || isCapturing || isDemoMode || visibleLines.length > 0) ? (
             <TranscriptBar
               finalLines={visibleLines}
-              interimText={isDemoMode ? '' : interimText}
+              interimText={(isDemoMode || isCapturing) ? '' : interimText}
             />
           ) : (
-            <p className="panel-placeholder">Press Start to begin listening, or run Demo.</p>
+            <p className="panel-placeholder">
+              Press 🎙 Start to use your mic, 🖥 Browser Call to capture tab audio, or run Demo.
+            </p>
           )}
         </div>
 

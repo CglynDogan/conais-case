@@ -71,12 +71,17 @@ export function buildUserPrompt({ session, lastFeedback = "" }) {
   const latest = window[window.length - 1] ?? null;
   const recent = window.slice(0, -1);
 
+  // If any utterance has a known speaker, annotate all lines with [speaker] prefix.
+  // For browser/demo mode every speaker is 'unknown', so output stays clean.
+  const allUnknown = window.every((u) => u.speaker === 'unknown');
+  const formatLine = (u) => allUnknown ? u.text : `[${u.speaker}] ${u.text}`;
+
   const recentText =
     recent.length > 0
-      ? recent.map((u) => u.text).join("\n")
+      ? recent.map((u) => formatLine(u)).join("\n")
       : "(start of conversation)";
 
-  const latestText = latest ? latest.text : "";
+  const latestText = latest ? formatLine(latest) : "";
 
   const parts = [
     `LANGUAGE: ${lang}`,

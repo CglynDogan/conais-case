@@ -1,8 +1,15 @@
 # Sales Call Coach — Real-Time Conversation Assistant
 
-A real-time AI coaching assistant for live conversations. It listens through the browser microphone, analyzes the transcript as speech happens, and surfaces coaching feedback, suggested follow-up questions, and info cards on screen — while the conversation is in progress.
+A real-time AI coaching assistant for live conversations. It listens to audio from a browser-based call (Jitsi Meet, Google Meet, any browser tab), analyzes the transcript as speech happens, and surfaces coaching feedback, suggested follow-up questions, and info cards on screen — while the conversation is in progress.
 
 Built as a hiring case study prototype. Demonstrates a full real-time pipeline: speech capture → WebSocket transport → rule-based heuristics + LLM coaching → live guidance UI.
+
+**Three input modes:**
+| Mode | How to use | When to use |
+|------|-----------|-------------|
+| **Browser Call** | Click 🖥 Browser Call → share the call tab | Jitsi, Meet, Zoom web, or any browser call |
+| **Mic** | Click 🎙 Start | Fallback — captures your local microphone only |
+| **Demo** | Click Demo in the header | No audio needed — scripted scenario through the real pipeline |
 
 ---
 
@@ -52,6 +59,32 @@ Click **Demo** again to restart. Click **Exit Demo** to return to live microphon
 
 ---
 
+## Browser Call Mode
+
+The recommended mode for real Jitsi (or any browser-based) calls.
+
+### How it works
+
+1. Open your Jitsi / Meet / browser call in a separate tab
+2. Open the coaching app at `http://localhost:5173` (in the same Chrome window)
+3. Click **🖥 Browser Call** in the transcript panel
+4. Chrome shows a tab/window picker — select your call tab and enable **"Share audio"**
+5. The coaching app captures the mixed audio (all participants), streams it to the backend via WebSocket, and Deepgram transcribes it in real time
+6. Coaching signals, suggested questions, and info cards appear as the conversation progresses
+7. Click **⏹ Stop Capture** (or use Chrome's "Stop sharing" button) to end
+
+### Requirements
+
+- Chrome 107+ (required for audio-only `getDisplayMedia`)
+- `DEEPGRAM_API_KEY` set in `backend/.env`
+- When the Chrome picker appears, check the **"Share audio"** checkbox — without it the stream has no audio tracks and capture fails with a message
+
+### Language
+
+Use the `tr-TR` / `en-US` toggle before starting capture. The selected language is sent to Deepgram and used in the coaching prompt.
+
+---
+
 ## Stack
 
 | Layer    | Technology                                     |
@@ -69,20 +102,24 @@ Click **Demo** again to restart. Click **Exit Demo** to return to live microphon
 Browser (React + Vite :5173)
 │
 ├── App.jsx                   Coaching UI — Feedback, Questions, Info Card, Transcript panels
-├── useWebSocket.js           WS connection, auto-reconnect (10 attempts)
-├── useSpeechRecognition.js   Web Speech API, continuous mode, auto-restart
+├── useWebSocket.js           WS connection, auto-reconnect (10 attempts), sendBinary
+├── useSpeechRecognition.js   Web Speech API, continuous mode, auto-restart (mic mode)
+├── useTabAudio.js            getDisplayMedia + MediaRecorder → binary WS frames (browser-call mode)
 └── TranscriptBar.jsx         Final + interim transcript display (secondary panel)
 │
 │   WebSocket  ws://localhost:3001
 │
 Backend (Node.js + Express + ws :3001)
 │
-├── server.js                 WS router, per-connection wiring, demo playback
+├── server.js                 WS router, per-connection wiring, demo + browser-call + Twilio paths
 ├── transcriptSession.js      Per-connection utterance store + context window
 ├── heuristics.js             Rule-based tone/pace signals with per-type cooldowns
-├── analysisTrigger.js        Two-path trigger: immediate (every final) + batched (3 finals / 3s silence)
+├── analysisTrigger.js        Two-path trigger: immediate (every final) + batched (configurable size/silence)
 ├── llmAnalyzer.js            Gemini call, responseSchema, 5s timeout, SAFE_FALLBACK
-└── promptBuilder.js          System prompt + dynamic user prompt from context window
+├── promptBuilder.js          System prompt + dynamic user prompt with speaker annotation
+├── audioStream.js            Browser audio stream handler — binary WS chunks → STT → pipeline
+├── sttProvider.js            Deepgram streaming STT (configurable format: WebM/Opus or mulaw)
+└── twilioStream.js           Twilio MediaStream handler (legacy path — still functional)
 
 Shared (no build step)
 └── shared/events.js          WS event name constants — imported by both sides
@@ -108,9 +145,74 @@ The paths are independent. A Gemini call in-flight does not block or delay the h
 ```
 PORT=3001
 GEMINI_API_KEY=your_gemini_api_key_here
+DEEPGRAM_API_KEY=your_deepgram_api_key_here
+TWILIO_STREAM_URL=wss://your-ngrok-subdomain.ngrok.io/twilio-stream
+TWILIO_CALL_LANG=tr-TR
 ```
 
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PORT` | No (default `3001`) | HTTP + WS listen port |
+| `GEMINI_API_KEY` | No | Gemini LLM. Absent → rule-only mode; heuristics still fire |
+| `DEEPGRAM_API_KEY` | For Twilio path | Deepgram streaming STT. Absent → calls connect but produce no transcripts |
+| `TWILIO_STREAM_URL` | For Twilio path | Full `wss://` URL Twilio dials for audio — must include `/twilio-stream` path |
+| `TWILIO_CALL_LANG` | No (default `tr-TR`) | Language sent to Deepgram and used in the coaching prompt. Override per-call via `?lang=` query param on the webhook URL |
+| `DEEPGRAM_MODEL` | No (default `nova-3`) | Deepgram model for phone transcription. Use `nova-2-phonecall` or `nova-2-general` if `nova-3` is unavailable for your plan |
+
 If `GEMINI_API_KEY` is absent, the backend starts in **rule-only mode** — heuristics fire normally, the LLM batched path is a silent no-op. The app still works.
+
+---
+
+## Twilio + Deepgram Setup (Phase T1)
+
+The Twilio path streams phone call audio through the backend for real-time coaching. The browser demo and microphone paths are unaffected.
+
+### What it does
+
+When a Twilio call arrives:
+1. Twilio dials `POST /twiml` — backend returns TwiML that opens a MediaStream to `/twilio-stream`
+2. Twilio sends mulaw 8kHz audio frames over WebSocket
+3. Backend forwards audio to Deepgram's streaming STT
+4. Deepgram fires `speech_final` transcripts — backend adds them to the coaching pipeline
+5. Connected browser clients receive `transcript:final`, `analysis:update`, `call:started`, and `call:ended` events in real time
+
+### Setup steps
+
+1. **Get a Deepgram API key** at [deepgram.com](https://deepgram.com) — set `DEEPGRAM_API_KEY` in `.env`
+
+2. **Expose the backend publicly** (ngrok example):
+   ```bash
+   ngrok http 3001
+   ```
+   Copy the HTTPS URL (e.g. `https://abc123.ngrok.io`).
+
+3. **Set Twilio env vars** in `.env`:
+   ```
+   TWILIO_STREAM_URL=wss://abc123.ngrok.io/twilio-stream
+   TWILIO_CALL_LANG=tr-TR   # or en-US
+   ```
+
+4. **Configure Twilio** — in your Twilio console, set the voice webhook for your number to:
+   ```
+   POST https://abc123.ngrok.io/twiml
+   ```
+   To use a different language for a specific number, append `?lang=en-US` to the webhook URL.
+
+5. **Restart the backend** — it will log:
+   ```
+   [SERVER] Twilio stream ready on ws://localhost:3001/twilio-stream
+   ```
+
+6. **Call your Twilio number** — the browser UI shows a purple **Live Call mm:ss** indicator in the header. Transcripts appear in the transcript panel; coaching signals fire as normal.
+
+### Source-aware trigger timing
+
+The Twilio path uses tighter batching than the browser/demo path — phone conversations move faster:
+
+| Path | Batch size | Silence window |
+|------|-----------|----------------|
+| Browser / Demo | 3 utterances | 3 000 ms |
+| Twilio call | 2 utterances | 1 500 ms |
 
 ---
 
@@ -150,6 +252,8 @@ All messages: `{ type: string, payload: object }`
 | `transcript:final`   | server → client   | Demo mode: server echoes scripted lines |
 | `demo:trigger`       | client → server   | Start scripted demo playback |
 | `analysis:update`    | server → client   | Coaching payload (see shapes below) |
+| `call:started`       | server → client   | Twilio call connected. payload: `{ callSid, lang }` |
+| `call:ended`         | server → client   | Twilio call ended. payload: `{}` |
 
 ### `analysis:update` — rule-based (`source: "rule"`)
 
@@ -236,6 +340,8 @@ Only the highest-priority signal not on cooldown is sent per utterance. Cooldown
 | 4     | ✅ Done | Gemini LLM integration, structured output, fallback |
 | 5     | ✅ Done | Demo mode, UI polish, prompt refinement, repo cleanup |
 | R     | ✅ Done | Recovery: coaching domain restored, intake pivot reverted |
+| T1    | ✅ Done | Twilio MediaStream + Deepgram STT plumbing (legacy path) |
+| J1    | ✅ Done | Browser-call mode: getDisplayMedia → Deepgram → pipeline |
 
 ---
 
@@ -257,8 +363,8 @@ Only the highest-priority signal not on cooldown is sent per utterance. Cooldown
 
 ## Known Limitations
 
-- **Chrome only** — Web Speech API (`webkitSpeechRecognition`) is Chrome-specific
-- **Internet required** — Web Speech API sends audio to Google's servers even in local dev
+- **Chrome only** — `getDisplayMedia` audio capture and Web Speech API are Chrome-specific
+- **Internet required** — Web Speech API sends audio to Google's servers; Deepgram requires network access
 - **No speaker diarization** — all speech is treated as a single speaker stream
 - **LLM latency** — Gemini responses typically take 1–3 s; the 5 s timeout is generous but visible under load
 - **No persistence** — session state is in-memory; restarting the backend clears all sessions
@@ -267,7 +373,6 @@ Only the highest-priority signal not on cooldown is sent per utterance. Cooldown
 ## Future Work
 
 - Speaker diarization (two-channel audio or speaker turn detection)
-- System audio / tab audio capture as alternative to microphone
 - Streaming LLM response for lower time-to-first-token
 - Persistent session log for post-call review
 - Confidence-threshold filtering on STT (currently all finals are forwarded)
