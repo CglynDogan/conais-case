@@ -26,7 +26,7 @@ import { SYSTEM_PROMPT, buildUserPrompt } from "./promptBuilder.js";
 
 const TIMEOUT_MS = 10_000;
 
-const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+const DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview";
 const DEFAULT_OPENAI_MODEL = "gpt-5-nano";
 
 // ── Response schema (Gemini structured output) ─────────────────────
@@ -183,7 +183,7 @@ function createOpenAiAnalyzer(apiKey, modelName) {
             { role: "user", content: userPrompt },
           ],
           response_format: { type: "json_object" },
-          max_completion_tokens: 300,  // cap output — schema fits in ~180 tokens; prevents padding
+          max_completion_tokens: 300, // cap output — schema fits in ~180 tokens; prevents padding
           // temperature omitted — gpt-5-nano only supports the default value (1)
         }),
         TIMEOUT_MS,
@@ -203,10 +203,17 @@ function createOpenAiAnalyzer(apiKey, modelName) {
       } else if (Array.isArray(rawContent)) {
         // Find the first text block in a content-part array
         const textPart = rawContent.find((b) => b?.type === "text");
-        contentStr = textPart?.text ?? rawContent.map((b) => b?.text ?? "").filter(Boolean).join("");
+        contentStr =
+          textPart?.text ??
+          rawContent
+            .map((b) => b?.text ?? "")
+            .filter(Boolean)
+            .join("");
       }
 
-      console.log(`[LLM] OpenAI message — finish_reason:${finishReason} content-shape:${Array.isArray(rawContent) ? "array(" + rawContent.length + ")" : typeof rawContent} extracted-len:${contentStr.length}`);
+      console.log(
+        `[LLM] OpenAI message — finish_reason:${finishReason} content-shape:${Array.isArray(rawContent) ? "array(" + rawContent.length + ")" : typeof rawContent} extracted-len:${contentStr.length}`,
+      );
       if (!contentStr && msg?.refusal) {
         console.warn("[LLM] OpenAI refusal:", msg.refusal);
       }
@@ -218,7 +225,9 @@ function createOpenAiAnalyzer(apiKey, modelName) {
     }
 
     if (!raw) {
-      console.warn(`[LLM] Could not parse OpenAI response — finish_reason:${finishReason}`);
+      console.warn(
+        `[LLM] Could not parse OpenAI response — finish_reason:${finishReason}`,
+      );
       return SAFE_FALLBACK;
     }
 
