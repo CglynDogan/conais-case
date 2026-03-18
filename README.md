@@ -144,22 +144,28 @@ The paths are independent. A Gemini call in-flight does not block or delay the h
 
 `backend/.env` (copy from `backend/.env.example`):
 
+**Recommended (Gemini):**
 ```
 PORT=3001
-LLM_PROVIDER=gemini          # or: openai
-GEMINI_API_KEY=...
-OPENAI_API_KEY=...           # required when LLM_PROVIDER=openai
-DEEPGRAM_API_KEY=...
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key_here
+DEEPGRAM_API_KEY=your_deepgram_api_key_here
+```
+
+**Optional OpenAI experiment** (not recommended for demo — `gpt-5-nano` produces incomplete JSON under real-time latency constraints):
+```
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your_openai_api_key_here
 ```
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `PORT` | No (default `3001`) | HTTP + WS listen port |
-| `LLM_PROVIDER` | No (default `gemini`) | `gemini` or `openai` — selects the coaching LLM |
+| `LLM_PROVIDER` | No (default `gemini`) | `gemini` (recommended) or `openai` |
 | `GEMINI_API_KEY` | When `LLM_PROVIDER=gemini` | Gemini API key. Absent → rule-only mode |
 | `GEMINI_MODEL` | No (default `gemini-2.5-flash`) | Override Gemini model |
 | `OPENAI_API_KEY` | When `LLM_PROVIDER=openai` | OpenAI API key. Absent → rule-only mode |
-| `OPENAI_MODEL` | No (default `gpt-5-mini`) | Override OpenAI model (e.g. `gpt-5-nano`) |
+| `OPENAI_MODEL` | No (default `gpt-5-nano`) | Override OpenAI model |
 | `DEEPGRAM_API_KEY` | For browser-call mode | Deepgram streaming STT. Absent → no transcripts |
 | `DEEPGRAM_MODEL` | No (default `nova-3`) | Deepgram STT model |
 
