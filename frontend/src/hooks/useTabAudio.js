@@ -95,7 +95,14 @@ export function useTabAudio({ send, sendBinary }) {
 
       setError(null);
 
-      // ── 1. Ask the user to share a tab / window / screen with audio ──
+      // ── 1. Pre-warm: tell the backend to open the Deepgram connection now ────
+      // The tab picker takes 2–5s for the user to interact with. Sending AUDIO_START
+      // here lets Deepgram complete its WS handshake before recording even begins,
+      // so the first audio chunk goes directly to an open connection — no buffering.
+      // If the picker is cancelled or fails, AUDIO_STOP is sent to cancel the session.
+      send(WS_EVENTS.AUDIO_START, { lang });
+
+      // ── 2. Ask the user to share a tab / window / screen with audio ──
       // video:true is required to open the picker on all platforms (including macOS).
       // video:false throws TypeError immediately on macOS Chrome before the picker opens.
       // Video tracks are stopped right after to avoid unnecessary screen capture.
@@ -111,6 +118,7 @@ export function useTabAudio({ send, sendBinary }) {
           preferCurrentTab: false,
         });
       } catch (err) {
+        send(WS_EVENTS.AUDIO_STOP, {}); // cancel the pre-warmed backend session
         setCaptureStatus(null);
         if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
           setError('not-allowed');
@@ -125,10 +133,11 @@ export function useTabAudio({ send, sendBinary }) {
       // Stop video tracks — only audio is needed for coaching
       stream.getVideoTracks().forEach((t) => t.stop());
 
-      // ── 2. Guard: make sure we actually got audio ──────────────────
+      // ── 3. Guard: make sure we actually got audio ──────────────────
       const audioTracks = stream.getAudioTracks();
       if (audioTracks.length === 0) {
         stream.getTracks().forEach((t) => t.stop());
+        send(WS_EVENTS.AUDIO_STOP, {}); // cancel the pre-warmed backend session
         setCaptureStatus(null);
         setError('no-audio');
         return;
@@ -138,15 +147,13 @@ export function useTabAudio({ send, sendBinary }) {
       streamRef.current = stream;
       const audioOnlyStream = new MediaStream(audioTracks);
 
-      // ── 3. Tell the backend a new session is starting ─────────────
-      send(WS_EVENTS.AUDIO_START, { lang });
-
       // ── 4. Start MediaRecorder ────────────────────────────────────
       const mimeType = pickMimeType();
       let recorder;
       try {
         recorder = new MediaRecorder(audioOnlyStream, mimeType ? { mimeType } : {});
       } catch {
+        send(WS_EVENTS.AUDIO_STOP, {}); // cancel the pre-warmed backend session
         setCaptureStatus(null);
         stream.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
@@ -195,6 +202,7 @@ export function useTabAudio({ send, sendBinary }) {
       try {
         recorder.start(TIMESLICE_MS);
       } catch {
+        send(WS_EVENTS.AUDIO_STOP, {}); // cancel the pre-warmed backend session
         setCaptureStatus(null);
         stream.getTracks().forEach((t) => t.stop());
         streamRef.current  = null;
