@@ -1,7 +1,7 @@
 /**
  * heuristics.js
  *
- * Lightweight intake signal detectors. Run immediately on every finalized
+ * Rule-based coaching signals. These run immediately on every finalized
  * utterance — no LLM call required.
  *
  * Usage:
@@ -9,88 +9,97 @@
  *   const signal = engine.run({ latest, previous, contextWindow, utteranceCount });
  *   engine.reset();                             // called on session reset
  *
- * Detectors (in priority order):
- *   1. budget_signal          — price / cost / budget language → price_sensitive
- *   2. urgency_signal         — urgency / deadline language     → urgent
- *   3. decision_maker_unknown — partner / team / approval lang  → decision_maker_unknown
- *   4. hesitation             — hedging / uncertainty language  → hesitant
+ * Signal priority (highest first):
+ *   1. price_objection — keyword detected in latest utterance
+ *   2. too_fast        — estimated WPM exceeds threshold
+ *   3. long_monologue  — accumulated utterances exceed threshold
+ *
+ * Only the highest-priority signal that is NOT on cooldown is returned.
+ * Cooldowns prevent the same signal from flooding the UI.
  *
  * Return shape:
- *   { signal_type: string, source: 'rule', _debug? }
+ *   { source: 'rule', tone_alert: { type, message }, _debug? }
  * or null when nothing notable.
  */
 
-// ── Cooldowns ────────────────────────────────────────────────────────
-// Minimum ms between repeated signals of the same type per session.
+// ── Thresholds ──────────────────────────────────────────────
 
+const TOO_FAST_WPM_THRESHOLD  = 160;
+const TOO_FAST_MIN_WORDS      = 5;
+const LONG_MONOLOGUE_THRESHOLD = 5;
+
+// Minimum ms between repeated signals of the same type.
 const COOLDOWN_MS = {
-  budget_signal:          30_000,
-  urgency_signal:         25_000,
-  decision_maker_unknown: 40_000,
-  hesitation:             20_000,
+  price_objection: 30_000,
+  too_fast:        15_000,
+  long_monologue:  25_000,
 };
 
-// ── Keyword banks ────────────────────────────────────────────────────
-
-const BUDGET_KEYWORDS = {
-  tr: ['pahalı', 'fiyat', 'fiyatlar', 'bütçe', 'ücret', 'maliyet', 'masraf', 'para', 'kısıtlı', 'sınırlı'],
-  en: ['expensive', 'price', 'pricing', 'cost', 'budget', 'fee', 'costly', 'afford', 'limited', 'tight'],
+const PRICE_KEYWORDS = {
+  tr: ['pahalı', 'fiyat', 'fiyatlar', 'bütçe', 'ücret', 'maliyet', 'masraf', 'para'],
+  en: ['expensive', 'price', 'pricing', 'cost', 'budget', 'fee', 'costly', 'afford'],
 };
 
-const URGENCY_KEYWORDS = {
-  tr: ['acil', 'hızlıca', 'en kısa sürede', 'urgently', 'asap', 'hemen', 'bekleyemeyiz', 'bu hafta', 'bu ay'],
-  en: ['urgent', 'asap', 'immediately', 'right away', 'as soon as', 'can\'t wait', 'this week', 'deadline'],
-};
-
-const DECISION_MAKER_KEYWORDS = {
-  tr: ['ortağım', 'ekibim', 'yöneticim', 'direktörüm', 'onay', 'karar veremem', 'birlikte karar', 'eşim', 'patronum'],
-  en: ['partner', 'my team', 'manager', 'director', 'approval', 'can\'t decide', 'together', 'spouse', 'boss'],
-};
-
-const HESITATION_KEYWORDS = {
-  tr: ['emin değilim', 'bilmiyorum', 'belki', 'düşünmem lazım', 'henüz netleşmedi', 'tam olarak değil', 'kararsızım'],
-  en: ["not sure", "i don't know", "maybe", 'need to think', 'not clear yet', 'not entirely', 'undecided', 'unsure'],
-};
-
-// ── Pure detectors (stateless) ───────────────────────────────────────
+// ── Pure signal detectors (stateless) ──────────────────────
 
 /** @param {import('./transcriptSession.js').Utterance} latest */
-function detectBudgetSignal(latest) {
+function detectPriceObjection(latest) {
   const lower = latest.text.toLowerCase();
-  const lang = latest.lang?.startsWith('tr') ? 'tr' : 'en';
-  const hit = BUDGET_KEYWORDS[lang].find((kw) => lower.includes(kw));
+  const lang  = latest.lang?.startsWith('tr') ? 'tr' : 'en';
+  const hit   = PRICE_KEYWORDS[lang].find((kw) => lower.includes(kw));
   if (!hit) return null;
-  return { signal_type: 'budget_signal', _debug: { keyword: hit } };
+
+  return {
+    tone_alert: {
+      type:    'price_objection',
+      message: lang === 'tr' ? 'Fiyat itirazı tespit edildi' : 'Price objection detected',
+    },
+    _debug: { keyword: hit },
+  };
 }
 
-/** @param {import('./transcriptSession.js').Utterance} latest */
-function detectUrgencySignal(latest) {
-  const lower = latest.text.toLowerCase();
+/**
+ * Estimated WPM using elapsed time between the two most recent finals.
+ * Lower-bound estimate (elapsed includes pauses), threshold is conservative.
+ */
+function detectTooFast(latest, previous) {
+  if (!previous) return null;
+  if (latest.wordCount < TOO_FAST_MIN_WORDS) return null;
+
+  const elapsedMs = latest.ts - previous.ts;
+  if (elapsedMs <= 0) return null;
+
+  const wpm = Math.round(latest.wordCount / (elapsedMs / 60_000));
+  if (wpm <= TOO_FAST_WPM_THRESHOLD) return null;
+
   const lang = latest.lang?.startsWith('tr') ? 'tr' : 'en';
-  const hit = URGENCY_KEYWORDS[lang].find((kw) => lower.includes(kw));
-  if (!hit) return null;
-  return { signal_type: 'urgency_signal', _debug: { keyword: hit } };
+  return {
+    tone_alert: {
+      type:    'too_fast',
+      message: lang === 'tr' ? 'Tempo çok hızlı' : 'Pace is too fast',
+    },
+    _debug: { wpm, wordCount: latest.wordCount, elapsedMs },
+  };
 }
 
-/** @param {import('./transcriptSession.js').Utterance} latest */
-function detectDecisionMakerUncertainty(latest) {
-  const lower = latest.text.toLowerCase();
-  const lang = latest.lang?.startsWith('tr') ? 'tr' : 'en';
-  const hit = DECISION_MAKER_KEYWORDS[lang].find((kw) => lower.includes(kw));
-  if (!hit) return null;
-  return { signal_type: 'decision_maker_unknown', _debug: { keyword: hit } };
+/** Fires once the utterance count reaches the threshold. */
+function detectLongMonologue(utteranceCount, contextWindow) {
+  if (utteranceCount < LONG_MONOLOGUE_THRESHOLD) return null;
+
+  const latest = contextWindow[contextWindow.length - 1];
+  const lang   = latest?.lang?.startsWith('tr') ? 'tr' : 'en';
+  return {
+    tone_alert: {
+      type:    'long_monologue',
+      message: lang === 'tr'
+        ? 'Uzun konuşma — soru sormayı deneyin'
+        : 'Long monologue — try asking a question',
+    },
+    _debug: { utteranceCount },
+  };
 }
 
-/** @param {import('./transcriptSession.js').Utterance} latest */
-function detectHesitation(latest) {
-  const lower = latest.text.toLowerCase();
-  const lang = latest.lang?.startsWith('tr') ? 'tr' : 'en';
-  const hit = HESITATION_KEYWORDS[lang].find((kw) => lower.includes(kw));
-  if (!hit) return null;
-  return { signal_type: 'hesitation', _debug: { keyword: hit } };
-}
-
-// ── Engine factory (stateful, per-connection) ────────────────────────
+// ── Engine factory (stateful, per-connection) ───────────────
 
 export function createHeuristicsEngine() {
   /** @type {Record<string, number>} signal type → last fired timestamp */
@@ -112,21 +121,21 @@ export function createHeuristicsEngine() {
    *   contextWindow:  import('./transcriptSession.js').Utterance[],
    *   utteranceCount: number,
    * }} ctx
-   * @returns {{ signal_type: string, source: 'rule', _debug? } | null}
+   * @returns {{ source: 'rule', tone_alert: { type: string, message: string }, _debug? } | null}
    */
-  function run({ latest }) {
+  function run({ latest, previous, contextWindow, utteranceCount }) {
     const candidates = [
-      detectBudgetSignal(latest),
-      detectUrgencySignal(latest),
-      detectDecisionMakerUncertainty(latest),
-      detectHesitation(latest),
+      detectPriceObjection(latest),
+      detectTooFast(latest, previous),
+      detectLongMonologue(utteranceCount, contextWindow),
     ];
 
     for (const signal of candidates) {
       if (!signal) continue;
-      if (isOnCooldown(signal.signal_type)) continue;
-      markFired(signal.signal_type);
-      return { signal_type: signal.signal_type, source: 'rule', _debug: signal._debug };
+      const type = signal.tone_alert.type;
+      if (isOnCooldown(type)) continue;
+      markFired(type);
+      return { source: 'rule', tone_alert: signal.tone_alert, _debug: signal._debug };
     }
 
     return null;

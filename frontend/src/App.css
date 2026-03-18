@@ -74,7 +74,7 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: rgba(255,255,255,0.8);
+  background: rgba(255, 255, 255, 0.8);
 }
 
 /* ── Main layout ──────────────────────────────────────────────────── */
@@ -91,7 +91,7 @@ body {
   gap: var(--gap);
 }
 
-/* ── Panels ───────────────────────────────────────────────────────── */
+/* ── Panels (base) ────────────────────────────────────────────────── */
 
 .panel {
   background: var(--surface);
@@ -116,13 +116,14 @@ body {
   line-height: 1.5;
 }
 
-/* Coaching Feedback — left of row 1 */
+/* ── Coaching Feedback ────────────────────────────────────────────── */
+
 .panel--coaching {
   flex: 1;
   min-height: 72px;
 }
 
-/* Coaching signal — rule-based and LLM variants share base style */
+/* Shared base for rule-based and LLM coaching signals */
 .coaching-signal {
   display: flex;
   flex-direction: column;
@@ -134,6 +135,10 @@ body {
   margin-bottom: 8px;
 }
 .coaching-signal:last-child { margin-bottom: 0; }
+
+.coaching-signal--llm {
+  border-left-color: var(--accent);
+}
 
 .coaching-signal__type {
   font-size: 10px;
@@ -154,19 +159,27 @@ body {
   margin-top: 1px;
 }
 
-/* Suggested Questions — right of row 1 */
+/* ── Suggested Questions ──────────────────────────────────────────── */
+
 .panel--suggestions {
-  width: 240px;
+  width: 260px;
   flex-shrink: 0;
 }
 
 .suggestion-list {
+  list-style: none;
+  counter-reset: suggestion-counter;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 0;
 }
 
 .suggestion-card {
+  counter-increment: suggestion-counter;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   padding: 8px 10px;
   background: var(--surface-alt);
   border: 1px solid var(--border);
@@ -176,12 +189,21 @@ body {
   color: var(--text);
 }
 
-/* Info Card / Quick Reference */
-.panel--info {
-  min-height: 48px;
+.suggestion-card::before {
+  content: counter(suggestion-counter);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.12);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+  margin-top: 1px;
 }
 
-.panel--info-active {
+/* ── Info Card / Quick Reference ──────────────────────────────────── */
+
+.panel--info {
   border-color: #374151;
 }
 
@@ -198,7 +220,8 @@ body {
   line-height: 1.5;
 }
 
-/* Live Transcript */
+/* ── Live Transcript (secondary) ──────────────────────────────────── */
+
 .panel--transcript {
   min-height: 100px;
 }
@@ -231,7 +254,8 @@ body {
   color: var(--text-muted);
 }
 
-/* Connection panel */
+/* ── Connection panel ─────────────────────────────────────────────── */
+
 .panel--connection {
   background: var(--surface-alt);
 }
@@ -260,7 +284,7 @@ body {
   color: #94a3b8;
 }
 
-/* ── Buttons ─────────────────────────────────────────────────────── */
+/* ── Buttons ──────────────────────────────────────────────────────── */
 
 .btn {
   align-self: flex-start;
@@ -298,7 +322,7 @@ body {
   padding: 4px 10px;
 }
 
-/* Demo — indigo outline, distinct from primary accent */
+/* Demo — indigo outline */
 .btn--demo {
   background: transparent;
   border: 1px solid #6366f1;

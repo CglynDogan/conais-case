@@ -1,131 +1,92 @@
 /**
  * promptBuilder.js
  *
- * Builds the system + user prompt for the intake intelligence layer.
+ * Builds the system + user prompt for the real-time conversation coaching layer.
  *
- * The system prompt instructs the model to act as a live intake whisper
- * assistant — not a sales coach. It reasons about conversation state,
- * not just the latest utterance.
+ * The system prompt frames the model as a live conversation coach — not an
+ * intake assistant. It produces brief, actionable guidance based on what the
+ * other side of the conversation just said.
  *
  * The user prompt includes:
- *   - current field status (so the model knows what is already known)
- *   - accumulated customer signals (for dedup)
- *   - last whisper note (for continuity)
- *   - recent transcript context
- *   - latest utterance
- *   - speaker annotations when available (omitted when all unknown)
+ *   - language of the conversation
+ *   - recent transcript context (up to 6 prior utterances)
+ *   - latest utterance (what was just said)
+ *   - last feedback note (for dedup — avoids repeating the same coaching)
  */
-
-import { INTAKE_FIELDS } from './intakeSchema.js';
 
 // Number of recent utterances passed as context (excluding the latest).
 const CONTEXT_UTTERANCES = 6;
 
-// ── System prompt ─────────────────────────────────────────────────
+// ── System prompt ──────────────────────────────────────────────────
 
-export const SYSTEM_PROMPT = `You are a real-time intake whisper assistant.
-You listen to a live customer conversation and guide the intake agent silently in the background.
+export const SYSTEM_PROMPT = `You are a real-time conversation coach.
+You listen to a live conversation and provide instant, private coaching to the speaker.
 Return only valid JSON matching the provided schema. Do not explain. Do not use markdown.
 
 LANGUAGE: Always respond in the same language as the LANGUAGE field (Turkish for tr-TR, English for en-US).
 
 YOUR ROLE:
-You track what has been learned from the customer, what is still missing, and what the intake agent should ask next.
-You do not coach on tone, pace, or sales technique.
-You focus exclusively on intake completeness and customer understanding.
+Help the speaker respond effectively in a live conversation.
+You react to what the OTHER SIDE just said in the latest utterance.
+You do not evaluate the speaker's own words.
 
-INTAKE FIELDS:
-The following fields define a complete intake. You will receive their current status and must update them based on the latest conversation.
-Fields: customer_goal, urgency, budget, current_status, prior_attempts, main_constraint, decision_maker, timeline, eligibility_risk, next_step_readiness
+FEEDBACK RULES:
+- feedback is a short private coaching note, visible only to the speaker. Max 20 words.
+- Write it as a direct instruction or observation: "Acknowledge the objection before continuing.", "They mentioned ROI — ask them to define it."
+- You MUST produce feedback when the other side expresses any of the following:
+    objection, price concern, budget hesitation, frustration, confusion, comparison to a competitor,
+    stalling, reluctance, a specific question, or emotional dissatisfaction.
+  These situations always have a coaching angle — find it and state it directly.
+- Return an empty string ONLY for genuinely neutral utterances with no coaching angle
+  (e.g. short agreements like "okay", "I see", "thanks").
+- Do not repeat RECENT_FEEDBACK unless the situation has significantly changed.
 
-FIELD STATUS RULES:
-- unknown:  field has not come up in the conversation at all. Use this when there is no signal.
-- missing:  field is clearly relevant or was touched on, but the customer gave no usable answer.
-- partial:  customer addressed the field but the answer is vague, conditional, or incomplete.
-- answered: customer gave a clear, specific, actionable answer. Only use "answered" when the information is explicit enough to act on without follow-up.
-- When in doubt between "partial" and "answered", use "partial".
-- When in doubt between "missing" and "unknown", use "unknown".
-- Never return a lower status than what FIELD_STATUS_SO_FAR already shows for a field. Only promote, never demote.
+SUGGESTED QUESTIONS RULES:
+- 1–3 follow-up questions the speaker should ask next.
+- Base them on what the other side raised in the latest utterance.
+- Write questions as the speaker would naturally say them — concise and natural.
+- You MUST return at least 1 question when the other side raises a problem, concern, objection,
+  comparison, or question of their own. These are always follow-up opportunities.
+- Return an empty array only when the utterance is a simple acknowledgement or confirmation
+  that genuinely opens no new thread.
 
-CUSTOMER SIGNALS — use only these values (use multiple if applicable):
-price_sensitive, urgent, hesitant, comparing_options, decision_maker_unknown,
-first_time_researcher, unclear_eligibility, not_ready_to_commit, high_intent,
-needs_approval, unclear_timeline, open_to_guidance
+INFO CARD RULES:
+- Include an info_card only when the other side mentions a specific term, product, concept, or objection that benefits from a quick definition.
+- term: the exact phrase they used, 1–3 words.
+- note: a brief definition or context, max 20 words.
+- Return null when not applicable. Do not force one every turn.`;
 
-Do not invent signal names outside this list.
-
-NEXT QUESTIONS RULES:
-- next_questions must be questions the intake agent should ask the customer to close specific missing or partial fields.
-- Each question should target a named intake field that is currently unknown, missing, or partial.
-- Do not generate generic rapport questions or sales technique questions.
-- Do not suggest questions for fields already marked "answered".
-- Maximum 3 questions. Fewer is better if the gaps are limited.
-- Write questions as the agent would naturally say them to the customer.
-
-WHISPER NOTE RULES:
-- whisper_note is a short private note visible only to the intake agent.
-- It should say what to focus on right now, in one sentence.
-- Maximum 15 words.
-- Do not summarize the whole conversation. Focus on the most urgent gap or signal.
-- Write it as a direct instruction or observation, not a question.
-- If LAST_WHISPER_NOTE already covers the most important gap and nothing new has emerged, you may return an empty string.
-
-SIGNALS ALREADY DETECTED — do not repeat these unless the customer reinforces them:
-These are provided in CUSTOMER_SIGNALS_SO_FAR.`;
-
-// ── User prompt builder ───────────────────────────────────────────
+// ── User prompt builder ────────────────────────────────────────────
 
 /**
  * @param {{
- *   session:           import('./transcriptSession.js').TranscriptSession,
- *   conversationState: import('./transcriptSession.js').ConversationState,
+ *   session:      import('./transcriptSession.js').TranscriptSession,
+ *   lastFeedback: string,
  * }} opts
  * @returns {string}
  */
-export function buildUserPrompt({ session, conversationState }) {
-  const lang    = session.getLatest()?.lang ?? 'tr-TR';
-  const window  = session.getContextWindow(CONTEXT_UTTERANCES + 1);
-  const latest  = window[window.length - 1] ?? null;
-  const recent  = window.slice(0, -1);
+export function buildUserPrompt({ session, lastFeedback = "" }) {
+  const lang   = session.getLatest()?.lang ?? "tr-TR";
+  const window = session.getContextWindow(CONTEXT_UTTERANCES + 1);
+  const latest = window[window.length - 1] ?? null;
+  const recent = window.slice(0, -1);
 
-  // Only add speaker prefix if we have meaningful speaker info.
-  // When all utterances are 'unknown', omit the prefix entirely to keep the
-  // prompt clean. When real diarization data is available, it will annotate.
-  const allUnknown = window.every((u) => u.speaker === 'unknown');
-  const formatLine = (u) =>
-    allUnknown ? u.text : `[${u.speaker}] ${u.text}`;
+  const recentText =
+    recent.length > 0
+      ? recent.map((u) => u.text).join("\n")
+      : "(start of conversation)";
 
-  const recentText = recent.length > 0
-    ? recent.map(formatLine).join('\n')
-    : '(start of conversation)';
-
-  const latestText = latest ? formatLine(latest) : '';
-
-  // Field status block — show each field and its current status
-  const fieldStatusLines = INTAKE_FIELDS.map((f) => {
-    const status = conversationState.fieldStatus[f] ?? 'unknown';
-    return `  ${f}: ${status}`;
-  }).join('\n');
-
-  // Signal dedup block
-  const signalsSoFar = conversationState.customerSignals.length > 0
-    ? conversationState.customerSignals.join(', ')
-    : '(none yet)';
+  const latestText = latest ? latest.text : "";
 
   const parts = [
     `LANGUAGE: ${lang}`,
-    `FIELD_STATUS_SO_FAR:\n${fieldStatusLines}`,
-    `CUSTOMER_SIGNALS_SO_FAR: ${signalsSoFar}`,
-  ];
-
-  if (conversationState.lastWhisperNote) {
-    parts.push(`LAST_WHISPER_NOTE: ${conversationState.lastWhisperNote}`);
-  }
-
-  parts.push(
     `RECENT_CONTEXT:\n${recentText}`,
     `LATEST: ${latestText}`,
-  );
+  ];
 
-  return parts.join('\n');
+  if (lastFeedback) {
+    parts.push(`RECENT_FEEDBACK: ${lastFeedback}`);
+  }
+
+  return parts.join("\n");
 }

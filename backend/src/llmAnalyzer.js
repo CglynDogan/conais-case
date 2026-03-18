@@ -1,7 +1,7 @@
 /**
  * llmAnalyzer.js
  *
- * Wraps the Gemini API call for the intake intelligence layer.
+ * Wraps the Gemini API call for the real-time conversation coaching layer.
  * - Uses structured JSON output via responseSchema
  * - 5 s timeout via Promise.race
  * - Returns SAFE_FALLBACK on any error (timeout, parse fail, API error)
@@ -9,7 +9,7 @@
  * Usage:
  *   const analyzer = createLlmAnalyzer(process.env.GEMINI_API_KEY);
  *   if (analyzer) {
- *     const result = await analyzer.analyze(session, conversationState);
+ *     const result = await analyzer.analyze(session, { lastFeedback });
  *   }
  *
  * Returns null from factory if API key is absent — caller checks before using.
@@ -17,91 +17,57 @@
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { SYSTEM_PROMPT, buildUserPrompt } from "./promptBuilder.js";
-import {
-  INTAKE_FIELDS,
-  STATUS_RANK,
-  initialFieldStatus,
-} from "./intakeSchema.js";
 
 const MODEL_NAME = "gemini-2.5-flash";
 const TIMEOUT_MS = 5_000;
 
-// Valid customer signal vocabulary — constrained to prevent model drift
-const VALID_SIGNALS = new Set([
-  "price_sensitive",
-  "urgent",
-  "hesitant",
-  "comparing_options",
-  "decision_maker_unknown",
-  "first_time_researcher",
-  "unclear_eligibility",
-  "not_ready_to_commit",
-  "high_intent",
-  "needs_approval",
-  "unclear_timeline",
-  "open_to_guidance",
-]);
-
-// Valid field statuses
-const VALID_STATUSES = new Set(Object.keys(STATUS_RANK));
-
-// ── Response schema ───────────────────────────────────────────────
-// field_status is a flat object with one property per intake field.
-// Each property is an enum of the four status values.
-
-const fieldStatusProperties = Object.fromEntries(
-  INTAKE_FIELDS.map((f) => [
-    f,
-    { type: "string", enum: ["answered", "partial", "missing", "unknown"] },
-  ]),
-);
+// ── Response schema ────────────────────────────────────────────────
 
 const RESPONSE_SCHEMA = {
   type: "object",
   properties: {
-    customer_signals: {
-      type: "array",
-      items: { type: "string" },
-      description: "Detected customer signals from the constrained vocabulary.",
-    },
-    field_status: {
-      type: "object",
-      properties: fieldStatusProperties,
-      description:
-        "Current status of each intake field based on the conversation so far.",
-    },
-    next_questions: {
-      type: "array",
-      items: { type: "string" },
-      description:
-        "1–3 questions the intake agent should ask next to close missing or partial fields.",
-    },
-    whisper_note: {
+    feedback: {
       type: "string",
-      description: "Short actionable note for the intake agent. Max 15 words.",
+      description:
+        "Short actionable coaching note for the speaker. Max 20 words. Empty string if nothing new to say.",
+    },
+    suggested_questions: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "1–3 follow-up questions the speaker should ask next, based on what the other side said.",
+    },
+    info_card: {
+      type: "object",
+      nullable: true,
+      properties: {
+        term: {
+          type: "string",
+          description: "Term or concept the other side mentioned. 1–3 words.",
+        },
+        note: {
+          type: "string",
+          description: "Brief definition or context. Max 20 words.",
+        },
+      },
+      description:
+        "Optional. Include only when the other side raises a specific term worth a quick definition. Null otherwise.",
     },
   },
-  required: [
-    "customer_signals",
-    "field_status",
-    "next_questions",
-    "whisper_note",
-  ],
+  required: ["feedback", "suggested_questions", "info_card"],
 };
 
-// ── Safe fallback ─────────────────────────────────────────────────
-// Returned on any error. All field statuses default to 'unknown' (not 'missing').
-// Does not crash the app or alter accumulated conversation state.
+// ── Safe fallback ──────────────────────────────────────────────────
+// Returned on any error. Does not crash the app or alter UI state.
 
 export const SAFE_FALLBACK = Object.freeze({
-  source: "llm",
-  customer_signals: [],
-  field_status: Object.freeze(initialFieldStatus()),
-  next_questions: [],
-  whisper_note: "",
+  source:              "llm",
+  feedback:            "",
+  suggested_questions: [],
+  info_card:           null,
 });
 
-// ── Helpers ───────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────
 
 function withTimeout(promise, ms) {
   const timer = new Promise((_, reject) =>
@@ -112,44 +78,29 @@ function withTimeout(promise, ms) {
 
 /**
  * Normalize and validate the raw model response.
- * Conservative by design:
- * - unknown signals are dropped (not coerced)
- * - unknown field names are dropped
- * - invalid status values fall back to 'unknown'
  */
 function normalize(raw) {
-  // customer_signals: filter to known vocabulary only
-  const customerSignals = Array.isArray(raw.customer_signals)
-    ? raw.customer_signals.map(String).filter((s) => VALID_SIGNALS.has(s))
+  const feedback =
+    typeof raw.feedback === "string" ? raw.feedback.trim() : "";
+
+  const suggestedQuestions = Array.isArray(raw.suggested_questions)
+    ? raw.suggested_questions.slice(0, 3).map(String).filter(Boolean)
     : [];
 
-  // field_status: validate each field and each status value
-  const rawFieldStatus =
-    raw.field_status && typeof raw.field_status === "object"
-      ? raw.field_status
-      : {};
-  const fieldStatus = Object.fromEntries(
-    INTAKE_FIELDS.map((f) => {
-      const v = rawFieldStatus[f];
-      return [f, VALID_STATUSES.has(v) ? v : "unknown"];
-    }),
-  );
-
-  // next_questions: cap at 3, coerce to string, drop blanks
-  const nextQuestions = Array.isArray(raw.next_questions)
-    ? raw.next_questions.slice(0, 3).map(String).filter(Boolean)
-    : [];
-
-  // whisper_note: trim, empty string if missing
-  const whisperNote =
-    typeof raw.whisper_note === "string" ? raw.whisper_note.trim() : "";
+  let infoCard = null;
+  if (raw.info_card && typeof raw.info_card === "object") {
+    const term =
+      typeof raw.info_card.term === "string" ? raw.info_card.term.trim() : "";
+    const note =
+      typeof raw.info_card.note === "string" ? raw.info_card.note.trim() : "";
+    if (term && note) infoCard = { term, note };
+  }
 
   return {
-    source: "llm",
-    customer_signals: customerSignals,
-    field_status: fieldStatus,
-    next_questions: nextQuestions,
-    whisper_note: whisperNote,
+    source:              "llm",
+    feedback,
+    suggested_questions: suggestedQuestions,
+    info_card:           infoCard,
   };
 }
 
@@ -167,7 +118,7 @@ function safeParseJson(text) {
   }
 }
 
-// ── Factory ───────────────────────────────────────────────────────
+// ── Factory ────────────────────────────────────────────────────────
 
 /**
  * Returns an analyzer instance, or null if no API key.
@@ -185,19 +136,19 @@ export function createLlmAnalyzer(apiKey) {
     systemInstruction: SYSTEM_PROMPT,
     generationConfig: {
       responseMimeType: "application/json",
-      responseSchema: RESPONSE_SCHEMA,
+      responseSchema:   RESPONSE_SCHEMA,
     },
   });
 
   /**
    * @param {import('./transcriptSession.js').TranscriptSession} session
-   * @param {import('./transcriptSession.js').ConversationState} conversationState
+   * @param {{ lastFeedback?: string }} [opts]
    * @returns {Promise<typeof SAFE_FALLBACK>}
    */
-  async function analyze(session, conversationState) {
+  async function analyze(session, { lastFeedback = "" } = {}) {
     if (!session.getLatest()) return SAFE_FALLBACK;
 
-    const userPrompt = buildUserPrompt({ session, conversationState });
+    const userPrompt = buildUserPrompt({ session, lastFeedback });
 
     let raw;
     try {

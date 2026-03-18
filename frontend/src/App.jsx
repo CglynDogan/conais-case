@@ -1,11 +1,11 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { TranscriptBar } from './components/TranscriptBar';
 import { WS_EVENTS } from './constants';
 import './App.css';
 
-// ── Display maps ───────────────────────────────────────────────────
+// ── Display maps ────────────────────────────────────────────────────
 
 const CONN_LABEL = {
   connecting:   'Connecting…',
@@ -24,60 +24,47 @@ const MIC_ERROR_MSG = {
   unsupported:   'Web Speech API is not supported in this browser. Use Chrome.',
   error:         'Speech recognition stopped unexpectedly.',
 };
-// Rule-based signal colors by type
+
+// Rule-based signal colors and labels
 const TONE_COLOR = {
-  normal:          '#64748b',
-  positive:        '#16a34a',
+  price_objection: '#ef4444',
   too_fast:        '#f59e0b',
   long_monologue:  '#f59e0b',
-  price_objection: '#ef4444',
-  off_topic:       '#8b5cf6',
 };
-// Human-readable labels for heuristic signal types
 const TONE_LABEL = {
   price_objection: 'Price Objection',
   too_fast:        'Speaking Too Fast',
   long_monologue:  'Long Monologue',
-  off_topic:       'Off Topic',
-  positive:        'Positive Signal',
-  normal:          'Normal',
-};
-// LLM priority colors
-const PRIORITY_COLOR = {
-  high:   '#ef4444',
-  medium: '#6366f1',
-  low:    '#64748b',
-};
-// Human-readable priority labels
-const PRIORITY_LABEL = {
-  high:   'Action Needed',
-  medium: 'Suggestion',
-  low:    'Note',
 };
 
 const LANGUAGES = ['tr-TR', 'en-US'];
 
-// ── App ───────────────────────────────────────────────────────────
+// ── App ──────────────────────────────────────────────────────────────
 
 export default function App() {
-  // ── WebSocket ──────────────────────────────────────────────
+  // ── Analysis state ─────────────────────────────────────────────
+  // Rule-based signal (source: 'rule') — immediate, every utterance
+  const [ruleSignal, setRuleSignal] = useState(null);
+  // LLM result (source: 'llm') — batched, every ~3 utterances
+  const [llmResult,  setLlmResult]  = useState(null);
+
+  // ── Transcript / demo ──────────────────────────────────────────
+  const [lang, setLang]             = useState('tr-TR');
+  const [finalLines, setFinalLines] = useState([]);
+  const [demoLines, setDemoLines]   = useState([]);
+  const [isDemoMode, setIsDemoMode] = useState(false);
+
+  // ── Last WS event (system panel) ───────────────────────────────
   const [lastEventSummary, setLastEventSummary] = useState(null);
 
-  // Rule-based signal (source: 'rule') — immediate, every utterance
-  const [ruleSignal, setRuleSignal]   = useState(null);
-  // LLM result (source: 'llm') — batched, every ~3 utterances
-  const [llmResult,  setLlmResult]    = useState(null);
-  // Lines echoed back from demo playback
-  const [demoLines, setDemoLines]     = useState([]);
-
+  // ── WS message handler ──────────────────────────────────────────
   const handleWsMessage = useCallback((msg) => {
-    setLastEventSummary({ type: msg.type, source: msg.payload?.source ?? null, ts: Date.now() });
+    setLastEventSummary({ type: msg.type, source: msg.payload?.source ?? null });
 
     if (msg.type === WS_EVENTS.ANALYSIS_UPDATE) {
       if (msg.payload?.source === 'rule') setRuleSignal(msg.payload);
       if (msg.payload?.source === 'llm')  setLlmResult(msg.payload);
     }
-    // Demo mode: server echoes transcript:final lines back — show them in transcript
     if (msg.type === WS_EVENTS.TRANSCRIPT_FINAL && msg.payload?.text) {
       setDemoLines((prev) => [...prev, msg.payload.text]);
     }
@@ -85,12 +72,7 @@ export default function App() {
 
   const { status: connStatus, send } = useWebSocket(handleWsMessage);
 
-  // ── Transcript state ───────────────────────────────────────
-  const [lang, setLang]             = useState('tr-TR');
-  const [finalLines, setFinalLines] = useState([]);
-  const [isDemoMode, setIsDemoMode] = useState(false);
-
-  // ── Speech recognition ─────────────────────────────────────
+  // ── Speech recognition ──────────────────────────────────────────
   const handleFinalResult = useCallback(
     (result) => {
       setFinalLines((prev) => [...prev, result.text]);
@@ -111,14 +93,19 @@ export default function App() {
   const { isListening, interimText, error: micError, isSupported, start, stop } =
     useSpeechRecognition({ onFinalResult: handleFinalResult, onInterimResult: handleInterimResult });
 
+  // ── Controls ────────────────────────────────────────────────────
+  const resetSession = () => {
+    setRuleSignal(null);
+    setLlmResult(null);
+    setFinalLines([]);
+    setDemoLines([]);
+  };
+
   const handleToggleListen = () => {
     if (isListening) {
       stop();
     } else {
-      setFinalLines([]);
-      setDemoLines([]);
-      setRuleSignal(null);
-      setLlmResult(null);
+      resetSession();
       setIsDemoMode(false);
       start(lang);
     }
@@ -132,23 +119,19 @@ export default function App() {
 
   const handleDemo = () => {
     if (isListening) stop();
-    setFinalLines([]);
-    setDemoLines([]);
-    setRuleSignal(null);
-    setLlmResult(null);
+    resetSession();
     setIsDemoMode(true);
     send(WS_EVENTS.DEMO_TRIGGER, { lang });
   };
 
-  // ── Derive display values ──────────────────────────────────
+  // ── Derived display values ──────────────────────────────────────
+  const feedback    = llmResult?.feedback            ?? '';
   const suggestions = llmResult?.suggested_questions ?? [];
-  const infoCard    = llmResult?.info_card ?? null;
-  const llmMessage  = llmResult?.coach_message ?? '';
+  const infoCard    = llmResult?.info_card           ?? null;
 
-  // Combined transcript: live lines during speech, demo lines during demo
   const visibleLines = isDemoMode ? demoLines : finalLines;
 
-  // ── Render ─────────────────────────────────────────────────
+  // ── Render ───────────────────────────────────────────────────────
   return (
     <div className="app">
 
@@ -173,25 +156,28 @@ export default function App() {
 
       <main className="app-main">
 
-        {/* Row 1: Coaching Feedback + Suggested Questions */}
+        {/* ── Row 1: Coaching Feedback + Suggested Questions ── */}
         <div className="row">
 
           {/* Coaching Feedback */}
           <div className="panel panel--coaching">
             <span className="panel-label">Coaching</span>
 
-            {!ruleSignal && !llmMessage && (
-              <p className="panel-placeholder">Coaching signals will appear here once the conversation starts.</p>
+            {!ruleSignal && !feedback && (
+              <p className="panel-placeholder">
+                Coaching signals will appear here once the conversation starts.
+              </p>
             )}
 
+            {/* Rule-based signal — immediate */}
             {ruleSignal && (
               <div
                 className="coaching-signal"
-                style={{ borderColor: TONE_COLOR[ruleSignal.tone_alert?.type] ?? TONE_COLOR.normal }}
+                style={{ borderColor: TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b' }}
               >
                 <span
                   className="coaching-signal__type"
-                  style={{ color: TONE_COLOR[ruleSignal.tone_alert?.type] ?? TONE_COLOR.normal }}
+                  style={{ color: TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b' }}
                 >
                   {TONE_LABEL[ruleSignal.tone_alert?.type] ?? ruleSignal.tone_alert?.type}
                 </span>
@@ -200,18 +186,10 @@ export default function App() {
               </div>
             )}
 
-            {llmMessage && (
-              <div
-                className="coaching-signal coaching-signal--llm"
-                style={{ borderColor: PRIORITY_COLOR[llmResult?.priority] ?? PRIORITY_COLOR.low }}
-              >
-                <span
-                  className="coaching-signal__type"
-                  style={{ color: PRIORITY_COLOR[llmResult?.priority] ?? PRIORITY_COLOR.low }}
-                >
-                  {PRIORITY_LABEL[llmResult?.priority] ?? llmResult?.priority}
-                </span>
-                <span className="coaching-signal__message">{llmMessage}</span>
+            {/* LLM feedback — batched */}
+            {feedback && (
+              <div className="coaching-signal coaching-signal--llm">
+                <span className="coaching-signal__message">{feedback}</span>
                 <span className="coaching-signal__tag">AI coach</span>
               </div>
             )}
@@ -221,29 +199,27 @@ export default function App() {
           <div className="panel panel--suggestions">
             <span className="panel-label">Suggested Questions</span>
             {suggestions.length > 0 ? (
-              <div className="suggestion-list">
+              <ol className="suggestion-list">
                 {suggestions.map((q, i) => (
-                  <div key={i} className="suggestion-card">
-                    {q}
-                  </div>
+                  <li key={i} className="suggestion-card">{q}</li>
                 ))}
-              </div>
+              </ol>
             ) : (
               <p className="panel-placeholder">Follow-up question ideas will appear here.</p>
             )}
           </div>
         </div>
 
-        {/* Row 2: Info Card — shown only when LLM returns one */}
+        {/* ── Row 2: Info Card — shown only when LLM returns one ── */}
         {infoCard && (
-          <div className="panel panel--info panel--info-active">
+          <div className="panel panel--info">
             <span className="panel-label">Quick Reference</span>
             <p className="info-card__term">{infoCard.term}</p>
             <p className="info-card__note">{infoCard.note}</p>
           </div>
         )}
 
-        {/* Row 3: Mic Controls + Live Transcript */}
+        {/* ── Row 3: Transcript (secondary) ── */}
         <div className="panel panel--transcript">
           <div className="transcript-header">
             <span className="panel-label">
@@ -290,7 +266,7 @@ export default function App() {
           )}
         </div>
 
-        {/* Row 4: Connection state */}
+        {/* ── Row 4: Connection / system ── */}
         <div className="panel panel--connection">
           <div className="connection-row">
             <span className="panel-label" style={{ marginBottom: 0 }}>Connection</span>

@@ -1,8 +1,8 @@
-# Intake Whisper Assistant — Real-Time Intake Intelligence
+# Sales Call Coach — Real-Time Conversation Assistant
 
-A real-time AI assistant for intake agents. It listens through the browser microphone, analyzes the live conversation, and surfaces structured intake guidance silently in the background while the call is in progress.
+A real-time AI coaching assistant for live conversations. It listens through the browser microphone, analyzes the transcript as speech happens, and surfaces coaching feedback, suggested follow-up questions, and info cards on screen — while the conversation is in progress.
 
-Built as a hiring case study prototype. Demonstrates a full real-time pipeline: speech capture → WebSocket transport → rule-based intake hints + LLM intake intelligence → structured guidance UI.
+Built as a hiring case study prototype. Demonstrates a full real-time pipeline: speech capture → WebSocket transport → rule-based heuristics + LLM coaching → live guidance UI.
 
 ---
 
@@ -30,7 +30,7 @@ open http://localhost:5173
 
 ## Demo Mode
 
-To show the product without a microphone or live API behavior, use the built-in scripted demo:
+To show the product without a microphone, use the built-in scripted demo:
 
 1. Start both servers
 2. Open `http://localhost:5173` in Chrome
@@ -38,14 +38,15 @@ To show the product without a microphone or live API behavior, use the built-in 
 4. Click **Demo** in the header (requires backend to be connected)
 5. Watch the scripted conversation replay automatically
 
-The demo runs a 5-utterance intake scenario through the **real pipeline** — same heuristics, same Gemini LLM call, same UI updates. It is not mocked. You will see:
-- A rule-based intake hint fire immediately (e.g. `budget_signal`, `hesitation`, `decision_maker_unknown`)
-- An LLM batch response arrive after utterance 3 with `field_status`, `next_questions`, and a `whisper_note`
-- Additional utterances trigger further rule hints and a second LLM batch
+The demo runs a 5-utterance sales scenario through the **real pipeline** — same heuristics, same Gemini LLM call, same UI updates. It is not mocked. You will see:
+- A rule-based `Price Objection` signal fire immediately on utterance 1
+- An LLM batch response arrive after utterance 3 with coaching feedback, suggested questions, and an info card for ROI
+- Utterance 4 triggers a `Long Monologue` rule signal
+- A second LLM batch arrives after utterance 5
 
-**Turkish demo** (`tr-TR`): customer with a vague goal, budget constraints, a failed prior attempt, decision-maker uncertainty, and a cost structure question.
+**Turkish demo** (`tr-TR`): prospect raises a price objection, challenges on competitive pricing, asks about ROI, stalls on commitment, then asks about SLA.
 
-**English demo** (`en-US`): same intake scenario in English — unclear need, tight budget, hesitation from prior failure, partner/director approval required, monthly vs. annual cost.
+**English demo** (`en-US`): same scenario in English — price concern, competitor comparison, ROI question, team approval stall, SLA inquiry.
 
 Click **Demo** again to restart. Click **Exit Demo** to return to live microphone mode.
 
@@ -53,12 +54,12 @@ Click **Demo** again to restart. Click **Exit Demo** to return to live microphon
 
 ## Stack
 
-| Layer    | Technology                                    |
-|----------|-----------------------------------------------|
-| Frontend | React 18 + Vite (port 5173)                   |
-| Backend  | Node.js + Express + `ws` WebSocket (port 3001)|
-| STT      | Browser Web Speech API (Chrome only)          |
-| LLM      | Google Gemini (`gemini-2.5-flash`)            |
+| Layer    | Technology                                     |
+|----------|------------------------------------------------|
+| Frontend | React 18 + Vite (port 5173)                    |
+| Backend  | Node.js + Express + `ws` WebSocket (port 3001) |
+| STT      | Browser Web Speech API (Chrome only)           |
+| LLM      | Google Gemini (`gemini-2.5-flash`)             |
 
 ---
 
@@ -67,9 +68,10 @@ Click **Demo** again to restart. Click **Exit Demo** to return to live microphon
 ```
 Browser (React + Vite :5173)
 │
+├── App.jsx                   Coaching UI — Feedback, Questions, Info Card, Transcript panels
 ├── useWebSocket.js           WS connection, auto-reconnect (10 attempts)
 ├── useSpeechRecognition.js   Web Speech API, continuous mode, auto-restart
-├── TranscriptBar.jsx         Final + interim transcript display
+└── TranscriptBar.jsx         Final + interim transcript display (secondary panel)
 │
 │   WebSocket  ws://localhost:3001
 │
@@ -77,7 +79,7 @@ Backend (Node.js + Express + ws :3001)
 │
 ├── server.js                 WS router, per-connection wiring, demo playback
 ├── transcriptSession.js      Per-connection utterance store + context window
-├── heuristics.js             Rule-based signals with per-type cooldowns
+├── heuristics.js             Rule-based tone/pace signals with per-type cooldowns
 ├── analysisTrigger.js        Two-path trigger: immediate (every final) + batched (3 finals / 3s silence)
 ├── llmAnalyzer.js            Gemini call, responseSchema, 5s timeout, SAFE_FALLBACK
 └── promptBuilder.js          System prompt + dynamic user prompt from context window
@@ -151,12 +153,15 @@ All messages: `{ type: string, payload: object }`
 
 ### `analysis:update` — rule-based (`source: "rule"`)
 
-Fires immediately after each utterance when a keyword is detected:
+Fires immediately after each utterance when a signal is detected:
 
 ```json
 {
   "source": "rule",
-  "signal_type": "budget_signal"
+  "tone_alert": {
+    "type": "price_objection",
+    "message": "Price objection detected"
+  }
 }
 ```
 
@@ -167,43 +172,34 @@ Fires after 3 utterances or 3s of silence:
 ```json
 {
   "source": "llm",
-  "customer_signals": ["price_sensitive", "hesitant"],
-  "field_status": {
-    "customer_goal": "partial",
-    "urgency": "unknown",
-    "budget": "partial",
-    "current_status": "unknown",
-    "prior_attempts": "answered",
-    "main_constraint": "unknown",
-    "decision_maker": "missing",
-    "timeline": "unknown",
-    "eligibility_risk": "unknown",
-    "next_step_readiness": "unknown"
-  },
-  "next_questions": [
-    "Bütçenizle ilgili belirli bir aralık düşündünüz mü?",
-    "Bu karar için kimler dahil olacak?"
+  "feedback": "Acknowledge the price concern before moving to features.",
+  "suggested_questions": [
+    "What budget range were you expecting?",
+    "Is cost the primary deciding factor for you?",
+    "What would make the ROI case clear for your team?"
   ],
-  "whisper_note": "Karar vericileri ve bütçe aralığını netleştirin."
+  "info_card": {
+    "term": "ROI",
+    "note": "Return on investment — quantify the value gain vs. total cost over time."
+  }
 }
 ```
 
-Only sent when `whisper_note`, `next_questions`, or `customer_signals` is non-empty.
+`info_card` is `null` when not applicable. Only sent when `feedback`, `suggested_questions`, or `info_card` is non-empty.
 
 ---
 
-## Rule-Based Intake Hints
+## Rule-Based Signals
 
-Heuristics run synchronously on every utterance — no LLM required. These are lightweight helpers that complement the LLM, not a replacement for it.
+Heuristics run synchronously on every utterance — no LLM required.
 
-| Signal | Trigger | Maps to | Cooldown |
-|--------|---------|---------|----------|
-| `budget_signal` | Budget/cost/price keywords | `price_sensitive` | 30 s |
-| `urgency_signal` | Urgency/deadline keywords | `urgent` | 25 s |
-| `decision_maker_unknown` | Partner/approval/team keywords | `decision_maker_unknown` | 40 s |
-| `hesitation` | Uncertainty/hedging keywords | `hesitant` | 20 s |
+| Signal | Trigger | Cooldown |
+|--------|---------|----------|
+| `price_objection` | Price/cost/budget keywords (TR + EN) | 30 s |
+| `too_fast` | Estimated WPM > 160, min 5 words | 15 s |
+| `long_monologue` | 5+ cumulative utterances | 25 s |
 
-Only the first matching signal not on cooldown is sent per utterance. Cooldowns reset on session reset or demo restart.
+Only the highest-priority signal not on cooldown is sent per utterance. Cooldowns reset on session reset or demo restart.
 
 ---
 
@@ -212,9 +208,9 @@ Only the first matching signal not on cooldown is sent per utterance. Cooldowns 
 - **Model**: `gemini-2.5-flash` via `@google/generative-ai`
 - **Output**: enforced structured JSON via `responseSchema` + `responseMimeType: "application/json"`
 - **Timeout**: 5 s (`Promise.race`). On timeout, `SAFE_FALLBACK` is returned and the app continues.
-- **Concurrency**: `isLlmBusy` per connection. If a batch trigger fires while a call is in-flight, the batch is skipped. The silence timer will fire again when speech resumes.
-- **Fallback**: `SAFE_FALLBACK = { source: 'llm', customer_signals: [], field_status: { …all 'unknown' }, next_questions: [], whisper_note: '' }`. Empty results are not sent to the client.
-- **Dedup**: accumulated `customer_signals` and `field_status` are carried across LLM batches via `conversationState` and injected into each prompt — the model knows what has already been detected and what fields are already answered.
+- **Concurrency**: `isLlmBusy` per connection. If a batch trigger fires while a call is in-flight, the batch is skipped. The silence timer re-fires on the next utterance.
+- **Fallback**: `SAFE_FALLBACK = { source: 'llm', feedback: '', suggested_questions: [], info_card: null }`. Empty results are not sent to the client.
+- **Dedup**: `lastFeedback` from the previous LLM response is included in the prompt as `RECENT_FEEDBACK` to prevent repeating the same coaching note.
 
 ---
 
@@ -239,8 +235,7 @@ Only the first matching signal not on cooldown is sent per utterance. Cooldowns 
 | 3     | ✅ Done | Session state, rule-based heuristics, two-path trigger |
 | 4     | ✅ Done | Gemini LLM integration, structured output, fallback |
 | 5     | ✅ Done | Demo mode, UI polish, prompt refinement, repo cleanup |
-| A     | ✅ Done | Product pivot: intake intelligence layer (schema, session state, LLM analyzer, prompt) |
-| B     | ✅ Done | Intake demo scripts (TR + EN), heuristics repurposed as intake signal helpers |
+| R     | ✅ Done | Recovery: coaching domain restored, intake pivot reverted |
 
 ---
 
@@ -272,8 +267,8 @@ Only the first matching signal not on cooldown is sent per utterance. Cooldowns 
 ## Future Work
 
 - Speaker diarization (two-channel audio or speaker turn detection)
+- System audio / tab audio capture as alternative to microphone
 - Streaming LLM response for lower time-to-first-token
 - Persistent session log for post-call review
 - Confidence-threshold filtering on STT (currently all finals are forwarded)
-- Frontend rebuild for intake-specific UI (whisper note, field coverage, next questions)
 - Deployment configuration (HTTPS required for mic in non-localhost environments)
