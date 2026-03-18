@@ -65,19 +65,21 @@ The recommended mode for real Jitsi (or any browser-based) calls.
 
 ### How it works
 
-1. Open your Jitsi / Meet / browser call in a separate tab
-2. Open the coaching app at `http://localhost:5173` (in the same Chrome window)
+1. Open your Jitsi / Meet / browser call in a **separate tab**
+2. Open the coaching app at `http://localhost:5173` in the same Chrome window
 3. Click **🖥 Browser Call** in the transcript panel
-4. Chrome shows a tab/window picker — select your call tab and enable **"Share audio"**
+4. Chrome shows a tab/window picker — **select the Jitsi/call tab** (not the coaching app tab), and check **"Share audio"**
 5. The coaching app captures the mixed audio (all participants), streams it to the backend via WebSocket, and Deepgram transcribes it in real time
 6. Coaching signals, suggested questions, and info cards appear as the conversation progresses
 7. Click **⏹ Stop Capture** (or use Chrome's "Stop sharing" button) to end
 
+> **Important:** In the Chrome picker, you must manually select your **call tab** — the coaching app tab is never the right choice. The status line in the transcript panel reminds you of this when the picker opens.
+
 ### Requirements
 
-- Chrome 107+ (required for audio-only `getDisplayMedia`)
+- Chrome on Windows (tab audio capture via `getDisplayMedia` is not supported on macOS Chrome)
 - `DEEPGRAM_API_KEY` set in `backend/.env`
-- When the Chrome picker appears, check the **"Share audio"** checkbox — without it the stream has no audio tracks and capture fails with a message
+- In the Chrome picker, check the **"Share audio"** checkbox — without it the stream has no audio tracks and capture fails with a clear error message
 
 ### Language
 

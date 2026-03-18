@@ -29,7 +29,7 @@ const MIC_ERROR_MSG = {
 const CAPTURE_ERROR_MSG = {
   'not-allowed':              'Tab sharing cancelled or denied. Try again and allow access.',
   'no-audio':                 'No audio captured. Check the "Share audio" box when selecting the tab.',
-  unsupported:                'Tab audio capture is not supported on this platform. Try Chrome on Windows.',
+  unsupported:                'Tab audio capture is not supported on macOS Chrome. Use Chrome on Windows, or use Mic mode instead.',
   'recorder-error':           'MediaRecorder failed to start. Try a different tab or reload.',
   error:                      'Audio capture failed unexpectedly.',
   'deepgram-not-configured':  'Deepgram API key not set — transcription unavailable.',
@@ -38,7 +38,7 @@ const CAPTURE_ERROR_MSG = {
 };
 
 const CAPTURE_STATUS_MSG = {
-  requesting: 'Waiting for tab selection…',
+  requesting: 'In the picker: select your Jitsi/call tab — not this coaching tab — then check "Share audio"',
   capturing:  'Streaming tab audio',
   stopped:    'Capture stopped',
 };
@@ -342,7 +342,7 @@ export default function App() {
                   <button
                     className="btn btn--browser"
                     onClick={handleStartBrowserCall}
-                    disabled={connStatus !== 'connected' || isListening || !!callState}
+                    disabled={connStatus !== 'connected' || isListening || !!callState || captureStatus === 'requesting'}
                     title="Capture browser tab audio (Jitsi, Meet, etc.)"
                   >
                     🖥 Browser Call

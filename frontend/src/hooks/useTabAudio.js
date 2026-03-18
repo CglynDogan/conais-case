@@ -7,8 +7,8 @@
  * Intended use: coaching during a Jitsi Meet (or any browser-based call)
  * by capturing the call tab's audio, which includes all remote participants.
  *
- * Browser support: Chrome 107+ required for audio-only getDisplayMedia.
- *   `preferCurrentTab: true` pre-selects the current tab in the picker (Chrome hint).
+ * Browser support: Chrome on Windows required for tab audio capture.
+ *   preferCurrentTab is explicitly false — the user must select their call tab, not the app tab.
  *
  * Audio format: audio/webm;codecs=opus (browser MediaRecorder default)
  *   Chunks are emitted every TIMESLICE_MS and sent as binary WS frames.
@@ -105,8 +105,10 @@ export function useTabAudio({ send, sendBinary }) {
         stream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
           audio: true,
-          // Chrome 107+ hint — preselects the current tab in the picker
-          preferCurrentTab: true,
+          // Do NOT use preferCurrentTab:true — it pre-selects the coaching app tab
+          // (localhost), which has no call audio. The user must select their Jitsi/call
+          // tab manually from the picker.
+          preferCurrentTab: false,
         });
       } catch (err) {
         setCaptureStatus(null);
