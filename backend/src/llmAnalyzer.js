@@ -1,27 +1,35 @@
 /**
  * llmAnalyzer.js
  *
- * Wraps the Gemini API call for the real-time conversation coaching layer.
- * - Uses structured JSON output via responseSchema
- * - 5 s timeout via Promise.race
- * - Returns SAFE_FALLBACK on any error (timeout, parse fail, API error)
+ * Provider-agnostic coaching analysis layer.
+ * Supports Gemini and OpenAI via LLM_PROVIDER env var.
+ *
+ * Output contract (unchanged):
+ *   { source: 'llm', feedback, suggested_questions, info_card }
+ *
+ * Provider selection:
+ *   LLM_PROVIDER=gemini  (default) — requires GEMINI_API_KEY
+ *   LLM_PROVIDER=openai            — requires OPENAI_API_KEY
  *
  * Usage:
- *   const analyzer = createLlmAnalyzer(process.env.GEMINI_API_KEY);
+ *   const analyzer = createLlmAnalyzer({ provider, geminiKey, openaiKey, ... });
  *   if (analyzer) {
  *     const result = await analyzer.analyze(session, { lastFeedback });
  *   }
  *
- * Returns null from factory if API key is absent — caller checks before using.
+ * Returns null from factory if the selected provider has no API key.
  */
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import OpenAI from "openai";
 import { SYSTEM_PROMPT, buildUserPrompt } from "./promptBuilder.js";
 
-const MODEL_NAME = "gemini-2.5-flash";
 const TIMEOUT_MS = 5_000;
 
-// ── Response schema ────────────────────────────────────────────────
+const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
+
+// ── Response schema (Gemini structured output) ─────────────────────
 
 const RESPONSE_SCHEMA = {
   type: "object",
@@ -58,7 +66,6 @@ const RESPONSE_SCHEMA = {
 };
 
 // ── Safe fallback ──────────────────────────────────────────────────
-// Returned on any error. Does not crash the app or alter UI state.
 
 export const SAFE_FALLBACK = Object.freeze({
   source:              "llm",
@@ -67,7 +74,7 @@ export const SAFE_FALLBACK = Object.freeze({
   info_card:           null,
 });
 
-// ── Helpers ────────────────────────────────────────────────────────
+// ── Shared utilities ───────────────────────────────────────────────
 
 function withTimeout(promise, ms) {
   const timer = new Promise((_, reject) =>
@@ -76,9 +83,6 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timer]);
 }
 
-/**
- * Normalize and validate the raw model response.
- */
 function normalize(raw) {
   const feedback =
     typeof raw.feedback === "string" ? raw.feedback.trim() : "";
@@ -118,21 +122,12 @@ function safeParseJson(text) {
   }
 }
 
-// ── Factory ────────────────────────────────────────────────────────
+// ── Gemini provider ────────────────────────────────────────────────
 
-/**
- * Returns an analyzer instance, or null if no API key.
- * @param {string | undefined} apiKey
- */
-export function createLlmAnalyzer(apiKey) {
-  if (!apiKey) {
-    console.warn("[LLM] GEMINI_API_KEY not set — LLM analysis disabled");
-    return null;
-  }
-
+function createGeminiAnalyzer(apiKey, modelName) {
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({
-    model: MODEL_NAME,
+    model: modelName,
     systemInstruction: SYSTEM_PROMPT,
     generationConfig: {
       responseMimeType: "application/json",
@@ -140,11 +135,6 @@ export function createLlmAnalyzer(apiKey) {
     },
   });
 
-  /**
-   * @param {import('./transcriptSession.js').TranscriptSession} session
-   * @param {{ lastFeedback?: string }} [opts]
-   * @returns {Promise<typeof SAFE_FALLBACK>}
-   */
   async function analyze(session, { lastFeedback = "" } = {}) {
     if (!session.getLatest()) return SAFE_FALLBACK;
 
@@ -156,15 +146,14 @@ export function createLlmAnalyzer(apiKey) {
         model.generateContent(userPrompt),
         TIMEOUT_MS,
       );
-      const text = result.response.text();
-      raw = safeParseJson(text);
+      raw = safeParseJson(result.response.text());
     } catch (err) {
-      console.warn("[LLM] Call failed:", err.message);
+      console.warn("[LLM] Gemini call failed:", err.message);
       return SAFE_FALLBACK;
     }
 
     if (!raw) {
-      console.warn("[LLM] Could not parse response");
+      console.warn("[LLM] Could not parse Gemini response");
       return SAFE_FALLBACK;
     }
 
@@ -172,4 +161,84 @@ export function createLlmAnalyzer(apiKey) {
   }
 
   return { analyze };
+}
+
+// ── OpenAI provider ────────────────────────────────────────────────
+
+function createOpenAiAnalyzer(apiKey, modelName) {
+  const client = new OpenAI({ apiKey });
+
+  async function analyze(session, { lastFeedback = "" } = {}) {
+    if (!session.getLatest()) return SAFE_FALLBACK;
+
+    const userPrompt = buildUserPrompt({ session, lastFeedback });
+
+    let raw;
+    try {
+      const completion = await withTimeout(
+        client.chat.completions.create({
+          model: modelName,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user",   content: userPrompt },
+          ],
+          response_format: { type: "json_object" },
+          temperature: 0,
+        }),
+        TIMEOUT_MS,
+      );
+      raw = safeParseJson(completion.choices[0].message.content ?? "");
+    } catch (err) {
+      console.warn("[LLM] OpenAI call failed:", err.message);
+      return SAFE_FALLBACK;
+    }
+
+    if (!raw) {
+      console.warn("[LLM] Could not parse OpenAI response");
+      return SAFE_FALLBACK;
+    }
+
+    return normalize(raw);
+  }
+
+  return { analyze };
+}
+
+// ── Public factory ─────────────────────────────────────────────────
+
+/**
+ * @param {{
+ *   provider?:    string,   // 'gemini' (default) | 'openai'
+ *   geminiKey?:   string,
+ *   openaiKey?:   string,
+ *   geminiModel?: string,
+ *   openaiModel?: string,
+ * }} opts
+ * @returns {{ analyze: Function } | null}
+ */
+export function createLlmAnalyzer({
+  provider    = "gemini",
+  geminiKey,
+  openaiKey,
+  geminiModel,
+  openaiModel,
+} = {}) {
+  if (provider === "openai") {
+    if (!openaiKey) {
+      console.warn("[LLM] LLM_PROVIDER=openai but OPENAI_API_KEY not set — LLM disabled");
+      return null;
+    }
+    const model = openaiModel ?? DEFAULT_OPENAI_MODEL;
+    console.log(`[LLM] OpenAI provider ready — model:${model}`);
+    return createOpenAiAnalyzer(openaiKey, model);
+  }
+
+  // Default: gemini
+  if (!geminiKey) {
+    console.warn("[LLM] GEMINI_API_KEY not set — LLM analysis disabled");
+    return null;
+  }
+  const model = geminiModel ?? DEFAULT_GEMINI_MODEL;
+  console.log(`[LLM] Gemini provider ready — model:${model}`);
+  return createGeminiAnalyzer(geminiKey, model);
 }

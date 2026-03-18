@@ -146,22 +146,24 @@ The paths are independent. A Gemini call in-flight does not block or delay the h
 
 ```
 PORT=3001
-GEMINI_API_KEY=your_gemini_api_key_here
-DEEPGRAM_API_KEY=your_deepgram_api_key_here
-TWILIO_STREAM_URL=wss://your-ngrok-subdomain.ngrok.io/twilio-stream
-TWILIO_CALL_LANG=tr-TR
+LLM_PROVIDER=gemini          # or: openai
+GEMINI_API_KEY=...
+OPENAI_API_KEY=...           # required when LLM_PROVIDER=openai
+DEEPGRAM_API_KEY=...
 ```
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `PORT` | No (default `3001`) | HTTP + WS listen port |
-| `GEMINI_API_KEY` | No | Gemini LLM. Absent → rule-only mode; heuristics still fire |
-| `DEEPGRAM_API_KEY` | For Twilio path | Deepgram streaming STT. Absent → calls connect but produce no transcripts |
-| `TWILIO_STREAM_URL` | For Twilio path | Full `wss://` URL Twilio dials for audio — must include `/twilio-stream` path |
-| `TWILIO_CALL_LANG` | No (default `tr-TR`) | Language sent to Deepgram and used in the coaching prompt. Override per-call via `?lang=` query param on the webhook URL |
-| `DEEPGRAM_MODEL` | No (default `nova-3`) | Deepgram model for phone transcription. Use `nova-2-phonecall` or `nova-2-general` if `nova-3` is unavailable for your plan |
+| `LLM_PROVIDER` | No (default `gemini`) | `gemini` or `openai` — selects the coaching LLM |
+| `GEMINI_API_KEY` | When `LLM_PROVIDER=gemini` | Gemini API key. Absent → rule-only mode |
+| `GEMINI_MODEL` | No (default `gemini-2.5-flash`) | Override Gemini model |
+| `OPENAI_API_KEY` | When `LLM_PROVIDER=openai` | OpenAI API key. Absent → rule-only mode |
+| `OPENAI_MODEL` | No (default `gpt-5-mini`) | Override OpenAI model (e.g. `gpt-5-nano`) |
+| `DEEPGRAM_API_KEY` | For browser-call mode | Deepgram streaming STT. Absent → no transcripts |
+| `DEEPGRAM_MODEL` | No (default `nova-3`) | Deepgram STT model |
 
-If `GEMINI_API_KEY` is absent, the backend starts in **rule-only mode** — heuristics fire normally, the LLM batched path is a silent no-op. The app still works.
+If neither LLM key is present, the backend starts in **rule-only mode** — heuristics fire normally, the LLM batched path is a silent no-op. The app still works.
 
 ---
 
