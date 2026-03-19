@@ -116,89 +116,187 @@ body {
   line-height: 1.5;
 }
 
-/* ── Coaching Feedback ────────────────────────────────────────────── */
+/* ── Primary AI Coaching Card ─────────────────────────────────────── */
 
-.panel--coaching {
-  flex: 1;
-  min-height: 72px;
-}
-
-/* Shared base for rule-based and LLM coaching signals */
-.coaching-signal {
+.coaching-card {
+  border-left: 3px solid var(--accent);
+  min-height: 76px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 9px 12px;
-  border-left: 3px solid var(--border);
-  border-radius: 0 var(--radius) var(--radius) 0;
-  background: var(--surface-alt);
-  margin-bottom: 8px;
-}
-.coaching-signal:last-child { margin-bottom: 0; }
-
-.coaching-signal--llm {
-  border-left-color: var(--accent);
+  gap: 10px;
 }
 
-.coaching-signal__type {
+.coaching-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.coaching-card__badge {
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.07em;
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 100px;
+  padding: 2px 8px;
 }
 
-.coaching-signal__message {
-  font-size: 13px;
+.coaching-card__text {
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.65;
   color: var(--text);
-  line-height: 1.4;
 }
 
-.coaching-signal__tag {
-  font-size: 10px;
+.coaching-card__empty {
+  font-size: 13px;
+}
+
+/* ── Warning chips (rule-based signals) ──────────────────────────── */
+
+.warning-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.warning-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid;
+  border-radius: 100px;
+  animation: chipIn 0.18s ease-out;
+}
+
+@keyframes chipIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.warning-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.warning-chip__label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.warning-chip__msg {
+  font-size: 12px;
   color: var(--text-muted);
-  margin-top: 1px;
 }
 
 /* ── Suggested Questions ──────────────────────────────────────────── */
 
-.panel--suggestions {
-  width: 260px;
-  flex-shrink: 0;
-}
-
-.suggestion-list {
-  list-style: none;
-  counter-reset: suggestion-counter;
+.sq-cards {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 0;
+  gap: 8px;
 }
 
-.suggestion-card {
-  counter-increment: suggestion-counter;
+/* ── Primary / Recommended card ── */
+
+.sq-primary {
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
   gap: 8px;
-  padding: 8px 10px;
-  background: var(--surface-alt);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 12px;
-  line-height: 1.5;
+  padding: 13px 15px;
+  background: rgba(99, 102, 241, 0.07);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  border-radius: 10px;
+  transition: border-color 0.15s;
+}
+
+.sq-primary:hover {
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+.sq-primary__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sq-primary__text {
+  font-size: 14px;
+  line-height: 1.65;
   color: var(--text);
 }
 
-.suggestion-card::before {
-  content: counter(suggestion-counter);
-  font-size: 10px;
+/* ── Alternative cards ── */
+
+.sq-alt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 13px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: border-color 0.15s;
+}
+
+.sq-alt:hover {
+  border-color: rgba(99, 102, 241, 0.25);
+}
+
+.sq-alt__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sq-alt__label {
+  font-size: 9px;
   font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.sq-alt__text {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+/* ── Shared badges ── */
+
+.sq-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  padding: 2px 7px;
+  border-radius: 100px;
+  white-space: nowrap;
+}
+
+.sq-badge--recommended {
   color: var(--accent);
   background: rgba(99, 102, 241, 0.12);
-  border-radius: 4px;
-  padding: 1px 5px;
-  flex-shrink: 0;
-  margin-top: 1px;
+  border: 1px solid rgba(99, 102, 241, 0.22);
+}
+
+.sq-badge--intent {
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  font-weight: 600;
 }
 
 /* ── Info Card / Quick Reference ──────────────────────────────────── */
@@ -346,6 +444,19 @@ body {
 }
 .btn--browser:hover:not(:disabled) {
   background: rgba(6, 182, 212, 0.1);
+  opacity: 1;
+}
+
+/* Export — green outline */
+.btn--export {
+  background: transparent;
+  border: 1px solid #16a34a;
+  color: #4ade80;
+  font-size: 11px;
+  padding: 4px 12px;
+}
+.btn--export:hover:not(:disabled) {
+  background: rgba(22, 163, 74, 0.1);
   opacity: 1;
 }
 

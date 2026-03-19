@@ -57,6 +57,53 @@ const TONE_LABEL = {
 
 const LANGUAGES = ['tr-TR', 'en-US'];
 
+const SESSION_MODE_LABEL = {
+  mic:          'Mic Mode',
+  'browser-call': 'Browser Call',
+  demo:         'Demo',
+  twilio:       'Twilio Call',
+};
+
+function exportTranscript({ lines, mode, feedback, suggestions }) {
+  const now    = new Date();
+  const ts     = now.toISOString().replace('T', ' ').slice(0, 19);
+  const fname  = `transcript-${ts.replace(/[: ]/g, '-')}.md`;
+  const mLabel = SESSION_MODE_LABEL[mode] ?? 'Unknown';
+
+  const body = lines.map((line) => {
+    const text    = typeof line === 'string' ? line : line.text;
+    const speaker = typeof line === 'string' ? null  : line.speaker;
+    const prefix  = speaker === 'me' ? 'Ben: ' : speaker === 'customer' ? 'Müşteri: ' : '';
+    return `${prefix}${text}`;
+  }).join('\n');
+
+  let md = `# Coaching Session Transcript\n\nDate: ${ts}\nMode: ${mLabel}\n\n---\n\n## Conversation\n\n${body}`;
+
+  if (feedback) {
+    md += `\n\n---\n\n## Last Coaching Advice\n\n${feedback}`;
+  }
+  if (suggestions.length > 0) {
+    md += `\n\n## Suggested Questions\n\n${suggestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
+  }
+
+  const url = URL.createObjectURL(new Blob([md], { type: 'text/markdown;charset=utf-8' }));
+  const a   = Object.assign(document.createElement('a'), { href: url, download: fname });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Lightweight keyword heuristic for question intent labels.
+// Returns a short tag or null — no backend field, no invented intelligence.
+function getQuestionIntent(text) {
+  const t = text.toLowerCase();
+  if (/bütçe|budget|cost|fiyat|maliyet|roi|return|kazan|tasarruf|saving/.test(t)) return 'Değer / ROI';
+  if (/karar|decide|decision|ne zaman|when|timeline|süreç|adım/.test(t))          return 'Karar';
+  if (/engel|obstacle|concern|sorun|problem|challenge|neden değil/.test(t))        return 'Engel';
+  if (/acil|urgent|öncelik|priority|critical/.test(t))                             return 'Öncelik';
+  if (/başarı|success|hedef|goal|metric|ölçüt|kriter/.test(t))                    return 'Başarı';
+  return null;
+}
+
 // Rule-based signal auto-clears after this many ms to avoid stale hints
 const RULE_HINT_TTL_MS = 8_000;
 
@@ -99,6 +146,9 @@ export default function App() {
     return () => clearInterval(interval);
   }, [callState]);
 
+  // ── Session mode — persists after stop for export metadata ────
+  const [sessionMode, setSessionMode] = useState(null);
+
   // ── Audio error (server-side: e.g. Deepgram key missing) ───────
   const [audioError, setAudioError] = useState(null);
 
@@ -122,10 +172,11 @@ export default function App() {
       }
     }
     if (msg.type === WS_EVENTS.TRANSCRIPT_FINAL && msg.payload?.text) {
-      setDemoLines((prev) => [...prev, msg.payload.text]);
+      setDemoLines((prev) => [...prev, { text: msg.payload.text, speaker: msg.payload.speaker ?? 'unknown' }]);
     }
     if (msg.type === WS_EVENTS.CALL_STARTED) {
       resetSession();
+      setSessionMode('twilio');
       setCallState({ callSid: msg.payload?.callSid, lang: msg.payload?.lang });
     }
     if (msg.type === WS_EVENTS.CALL_ENDED) {
@@ -141,7 +192,7 @@ export default function App() {
   // ── Speech recognition ──────────────────────────────────────────
   const handleFinalResult = useCallback(
     (result) => {
-      setFinalLines((prev) => [...prev, result.text]);
+      setFinalLines((prev) => [...prev, { text: result.text, speaker: 'me' }]);
       send(WS_EVENTS.TRANSCRIPT_FINAL, {
         text:       result.text,
         confidence: result.confidence,
@@ -185,6 +236,7 @@ export default function App() {
       setAudioError(null);
       resetSession();
       setIsDemoMode(false);
+      setSessionMode('mic');
       start(lang);
     }
   };
@@ -202,6 +254,7 @@ export default function App() {
     setAudioError(null);
     resetSession();
     setIsDemoMode(false);
+    setSessionMode('browser-call');
     await startCapture(lang);
   };
 
@@ -216,6 +269,7 @@ export default function App() {
     setAudioError(null);
     resetSession();
     setIsDemoMode(true);
+    setSessionMode('demo');
     send(WS_EVENTS.DEMO_TRIGGER, { lang });
   };
 
@@ -224,7 +278,14 @@ export default function App() {
   const suggestions = llmResult?.suggested_questions ?? [];
   const infoCard    = llmResult?.info_card           ?? null;
 
-  const visibleLines = (isDemoMode || isCapturing || !!callState) ? demoLines : finalLines;
+  // After Browser Call stops, isCapturing becomes false and we'd fall to finalLines (empty).
+  // Fall back to demoLines so transcript stays visible after stop.
+  const visibleLines = (isDemoMode || isCapturing || !!callState)
+    ? demoLines
+    : finalLines.length > 0 ? finalLines : demoLines;
+
+  // True when no session is actively running — show export button
+  const isSessionIdle = !isListening && !isCapturing && !isDemoMode && !callState;
 
   // ── Render ───────────────────────────────────────────────────────
   return (
@@ -257,61 +318,79 @@ export default function App() {
 
       <main className="app-main">
 
-        {/* ── Row 1: Coaching Feedback + Suggested Questions ── */}
-        <div className="row">
-
-          {/* Coaching Feedback */}
-          <div className="panel panel--coaching">
-            <span className="panel-label">Coaching</span>
-
-            {!ruleSignal && !feedback && (
-              <p className="panel-placeholder">
-                Coaching signals will appear here once the conversation starts.
-              </p>
-            )}
-
-            {/* Rule-based signal — immediate */}
-            {ruleSignal && (
-              <div
-                className="coaching-signal"
-                style={{ borderColor: TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b' }}
-              >
-                <span
-                  className="coaching-signal__type"
-                  style={{ color: TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b' }}
-                >
-                  {TONE_LABEL[ruleSignal.tone_alert?.type] ?? ruleSignal.tone_alert?.type}
-                </span>
-                <span className="coaching-signal__message">{ruleSignal.tone_alert?.message}</span>
-                <span className="coaching-signal__tag">rule-based</span>
-              </div>
-            )}
-
-            {/* LLM feedback — batched */}
-            {feedback && (
-              <div className="coaching-signal coaching-signal--llm">
-                <span className="coaching-signal__message">{feedback}</span>
-                <span className="coaching-signal__tag">AI coach</span>
-              </div>
-            )}
+        {/* ── 1. Primary AI Coaching Card ── */}
+        <div className="panel coaching-card">
+          <div className="coaching-card__header">
+            <span className="panel-label" style={{ marginBottom: 0 }}>AI Coaching</span>
+            <span className="coaching-card__badge">AI Coach</span>
           </div>
-
-          {/* Suggested Questions */}
-          <div className="panel panel--suggestions">
-            <span className="panel-label">Suggested Questions</span>
-            {suggestions.length > 0 ? (
-              <ol className="suggestion-list">
-                {suggestions.map((q, i) => (
-                  <li key={i} className="suggestion-card">{q}</li>
-                ))}
-              </ol>
-            ) : (
-              <p className="panel-placeholder">Follow-up question ideas will appear here.</p>
-            )}
-          </div>
+          {feedback ? (
+            <p className="coaching-card__text">{feedback}</p>
+          ) : (
+            <p className="panel-placeholder coaching-card__empty">
+              Coaching advice will appear once the conversation starts.
+            </p>
+          )}
         </div>
 
-        {/* ── Row 2: Info Card — shown only when LLM returns one ── */}
+        {/* ── 2. Warning Chips — rule-based signals, auto-expire ── */}
+        {ruleSignal && (
+          <div className="warning-row">
+            <div
+              className="warning-chip"
+              style={{
+                borderColor: (TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b') + '55',
+                background:  (TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b') + '18',
+              }}
+            >
+              <span className="warning-chip__dot" style={{ background: TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b' }} />
+              <span className="warning-chip__label" style={{ color: TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#94a3b8' }}>
+                {TONE_LABEL[ruleSignal.tone_alert?.type] ?? ruleSignal.tone_alert?.type}
+              </span>
+              {ruleSignal.tone_alert?.message && (
+                <span className="warning-chip__msg">{ruleSignal.tone_alert.message}</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── 3. Suggested Next Questions ── */}
+        <div className="panel panel--suggestions">
+          <span className="panel-label">Suggested Next Questions</span>
+          {suggestions.length > 0 ? (
+            <div className="sq-cards">
+
+              {/* Primary — recommended next question */}
+              <div className="sq-primary">
+                <div className="sq-primary__meta">
+                  <span className="sq-badge sq-badge--recommended">Recommended</span>
+                  {getQuestionIntent(suggestions[0]) && (
+                    <span className="sq-badge sq-badge--intent">{getQuestionIntent(suggestions[0])}</span>
+                  )}
+                </div>
+                <p className="sq-primary__text">{suggestions[0]}</p>
+              </div>
+
+              {/* Alternatives — secondary options */}
+              {suggestions.slice(1).map((q, i) => (
+                <div key={i + 1} className="sq-alt">
+                  <div className="sq-alt__meta">
+                    <span className="sq-alt__label">Alternative</span>
+                    {getQuestionIntent(q) && (
+                      <span className="sq-badge sq-badge--intent">{getQuestionIntent(q)}</span>
+                    )}
+                  </div>
+                  <p className="sq-alt__text">{q}</p>
+                </div>
+              ))}
+
+            </div>
+          ) : (
+            <p className="panel-placeholder">Follow-up question ideas will appear once AI has enough context.</p>
+          )}
+        </div>
+
+        {/* ── 4. Info Card — shown only when LLM returns one ── */}
         {infoCard && (
           <div className="panel panel--info">
             <span className="panel-label">Quick Reference</span>
@@ -330,7 +409,9 @@ export default function App() {
                   ? 'Browser Call'
                   : callState
                     ? 'Live Call Transcript'
-                    : 'Live Transcript'}
+                    : isSessionIdle && visibleLines.length > 0
+                      ? `${SESSION_MODE_LABEL[sessionMode] ?? 'Session'} — Ended`
+                      : 'Live Transcript'}
             </span>
             <div className="mic-controls">
               {/* Language toggle — hidden during demo or browser-call capture */}
@@ -381,6 +462,17 @@ export default function App() {
                   setDemoLines([]);
                 }}>
                   Exit Demo
+                </button>
+              )}
+
+              {/* Export — shown when idle and transcript has content */}
+              {isSessionIdle && visibleLines.length > 0 && (
+                <button
+                  className="btn btn--export"
+                  onClick={() => exportTranscript({ lines: visibleLines, mode: sessionMode, feedback, suggestions })}
+                  title="Download transcript as Markdown"
+                >
+                  ⬇ Export
                 </button>
               )}
             </div>

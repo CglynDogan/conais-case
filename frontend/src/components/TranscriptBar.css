@@ -1,39 +1,84 @@
-.transcript-bar {
-  max-height: 140px;
+/* ── Chat log container ───────────────────────────────────────────── */
+
+.chat-log {
+  max-height: 260px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  /* Custom scrollbar */
+  gap: 6px;
+  padding: 2px 4px;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
 
-.transcript-bar::-webkit-scrollbar {
-  width: 4px;
-}
-.transcript-bar::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
-}
+.chat-log::-webkit-scrollbar       { width: 4px; }
+.chat-log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
-.transcript-empty {
+.chat-empty {
   color: var(--text-muted);
   font-size: 13px;
   font-style: italic;
 }
 
-/* Committed utterance — full brightness */
-.transcript-final {
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.5;
+/* ── Bubble wrapper — controls side alignment ─────────────────────── */
+
+.chat-wrap {
+  display: flex;
+  flex-direction: column;
+  max-width: 74%;
 }
 
-/* In-progress recognition — visually distinct, replaced in place */
-.transcript-interim {
-  color: var(--text-muted);
-  font-size: 14px;
+/* My messages — right */
+.chat-wrap--me {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+/* Customer / unknown — left */
+.chat-wrap--other {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+/* ── Bubble base ──────────────────────────────────────────────────── */
+
+.chat-bubble {
+  padding: 8px 13px;
+  border-radius: 16px;
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: break-word;
+  color: var(--text);
+}
+
+/* "Me" — right side, indigo tint */
+.chat-bubble--me {
+  background: rgba(99, 102, 241, 0.16);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-bottom-right-radius: 4px;
+}
+
+/* Customer / unknown — left side, neutral */
+.chat-bubble--other {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+
+/* Interim mic input — dashed, faded */
+.chat-bubble--interim {
+  opacity: 0.5;
   font-style: italic;
-  line-height: 1.5;
+  border-style: dashed;
+}
+
+/* ── Speaker label ────────────────────────────────────────────────── */
+
+.chat-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-top: 3px;
+  padding: 0 4px;
+  letter-spacing: 0.03em;
 }
