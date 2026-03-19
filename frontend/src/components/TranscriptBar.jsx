@@ -33,12 +33,33 @@ export function TranscriptBar({ finalLines, interimText }) {
           {finalLines.map((line, i) => {
             const text    = typeof line === 'string' ? line : line.text;
             const speaker = typeof line === 'string' ? 'me'  : (line.speaker ?? 'me');
-            const isMe    = speaker === 'me';
-            const label   = speaker === 'customer' ? 'Müşteri' : speaker === 'me' ? 'Ben' : 'Konuşma';
+
+            // Side and bubble class are determined independently so diarized speakers
+            // get visual separation without falsely claiming "Ben" (agent) identity.
+            //
+            //   'me' / 'agent'   → right + indigo  (genuinely known: mic mode)
+            //   'customer'       → left  + neutral  (genuinely known: demo mode)
+            //   'speaker_0'      → left  + slate    (diarized: first voice, role unknown)
+            //   'speaker_1'      → right + blue     (diarized: second voice, role unknown)
+            //   'unknown'        → left  + neutral
+            const sideClass   = (speaker === 'me' || speaker === 'agent' || speaker === 'speaker_1')
+                                  ? 'chat-wrap--me' : 'chat-wrap--other';
+            const bubbleClass = speaker === 'me'        ? 'chat-bubble--me'
+                              : speaker === 'agent'     ? 'chat-bubble--me'
+                              : speaker === 'customer'  ? 'chat-bubble--other'
+                              : speaker === 'speaker_0' ? 'chat-bubble--dia-a'
+                              : speaker === 'speaker_1' ? 'chat-bubble--dia-b'
+                              : 'chat-bubble--other';
+            const label       = speaker === 'me'        ? 'Ben'
+                              : speaker === 'agent'     ? 'Ben'
+                              : speaker === 'customer'  ? 'Müşteri'
+                              : speaker === 'speaker_0' ? 'A'
+                              : speaker === 'speaker_1' ? 'B'
+                              : 'Konuşma';
 
             return (
-              <div key={i} className={`chat-wrap ${isMe ? 'chat-wrap--me' : 'chat-wrap--other'}`}>
-                <div className={`chat-bubble ${isMe ? 'chat-bubble--me' : 'chat-bubble--other'}`}>
+              <div key={i} className={`chat-wrap ${sideClass}`}>
+                <div className={`chat-bubble ${bubbleClass}`}>
                   {text}
                 </div>
                 <span className="chat-label">{label}</span>

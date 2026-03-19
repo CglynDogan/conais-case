@@ -52,8 +52,8 @@ export function createAudioStreamHandler({ apiKey, onTranscript, onError }) {
     // Browser MediaRecorder produces WebM/Opus — use browser-format defaults
     stt = createSttProvider({ apiKey, language: lang });
 
-    stt.on('transcript', ({ text }) => {
-      onTranscript({ text, lang: currentLang, ts: Date.now(), speaker: 'unknown' });
+    stt.on('transcript', ({ text, speaker }) => {
+      onTranscript({ text, lang: currentLang, ts: Date.now(), speaker: speaker ?? 'unknown' });
     });
 
     stt.on('error', (err) => {

@@ -7,26 +7,12 @@
  *                     → runs heuristics synchronously, no delay
  *
  *   Batched path    — fires when enough new content has accumulated
- *                     → Phase 3: stub (logs + status message)
- *                     → Phase 4: replace onBatch with Gemini call
- *                     Triggers when: BATCH_SIZE finals OR SILENCE_MS of quiet
+ *                     → runs the LLM coaching analysis (Gemini/OpenAI)
+ *                     → triggers when BATCH_SIZE finals OR SILENCE_MS of quiet
  *
- * ── Phase 4 integration notes ────────────────────────────────────────
- *
- * To plug in the LLM in Phase 4, replace the onBatch stub in server.js
- * with an async function that calls geminiService. Two things to handle:
- *
- *   1. Guard against overlapping calls:
- *      The trigger fires regardless of whether the previous LLM call is
- *      still running. In Phase 4, set `isLlmBusy` in server.js and skip
- *      onBatch (or queue it) while the previous call is in-flight.
- *      This trigger intentionally does NOT own that state — keeping it here
- *      would couple the trigger to the LLM lifecycle.
- *
- *   2. Timeout + fallback:
- *      onBatch should wrap the LLM call in a 5s timeout and send the
- *      safe fallback payload on failure (defined in shared/fallback.js,
- *      which will be added in Phase 4).
+ * The trigger does not own LLM-busy state — server.js uses `isLlmBusy` to
+ * guard against overlapping calls. If a batch fires while a call is in-flight,
+ * the caller skips it; the silence-timer path will catch any trailing content.
  */
 
 /**

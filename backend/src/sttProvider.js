@@ -48,6 +48,7 @@ export function createSttProvider({
     punctuate:       'true',
     interim_results: 'false',
     endpointing:     '300',
+    diarize:         'true',   // speaker turn separation for browser-call path
   };
 
   if (container) {
@@ -105,10 +106,28 @@ export function createSttProvider({
       data.type === 'Results' &&
       data.is_final === true
     ) {
-      const text = data.channel?.alternatives?.[0]?.transcript ?? '';
-      if (text.trim()) {
-        emitter.emit('transcript', { text: text.trim() });
+      const alt  = data.channel?.alternatives?.[0];
+      const text = alt?.transcript ?? '';
+      if (!text.trim()) return;
+
+      // Extract dominant speaker index from the words array (diarize=true).
+      // Each word carries a speaker integer; pick the most frequent one for this segment.
+      // Produces 'speaker_0', 'speaker_1', etc. — honest labels, no role assumption.
+      let speakerTag = null;
+      const words = alt?.words ?? [];
+      if (words.length > 0) {
+        const counts = {};
+        for (const w of words) {
+          if (w.speaker != null) counts[w.speaker] = (counts[w.speaker] ?? 0) + 1;
+        }
+        const keys = Object.keys(counts);
+        if (keys.length > 0) {
+          const dominant = keys.reduce((a, b) => counts[a] > counts[b] ? a : b);
+          speakerTag = `speaker_${dominant}`;
+        }
       }
+
+      emitter.emit('transcript', { text: text.trim(), speaker: speakerTag });
     }
   });
 

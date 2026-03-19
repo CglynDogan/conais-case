@@ -198,6 +198,7 @@ export default function App() {
         confidence: result.confidence,
         lang:       result.lang,
         ts:         result.ts,
+        speaker:    'agent',  // mic = salesperson
       });
     },
     [send],

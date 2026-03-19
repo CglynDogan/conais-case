@@ -44,6 +44,9 @@ const PRICE_KEYWORDS = {
 
 /** @param {import('./transcriptSession.js').Utterance} latest */
 function detectPriceObjection(latest) {
+  // Only fire on customer/unknown speech — not on the agent's own pricing language
+  if (latest.speaker === 'agent') return null;
+
   const lower = latest.text.toLowerCase();
   const lang  = latest.lang?.startsWith('tr') ? 'tr' : 'en';
   const hit   = PRICE_KEYWORDS[lang].find((kw) => lower.includes(kw));

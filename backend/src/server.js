@@ -300,18 +300,18 @@ wss.on("connection", (ws) => {
     onError(reason) {
       wsSend(ws, WS_EVENTS.AUDIO_ERROR, { reason });
     },
-    onTranscript({ text, lang }) {
+    onTranscript({ text, lang, speaker }) {
       const utterance = session.addUtterance({
         text,
         lang,
         ts: Date.now(),
-        speaker: "unknown",
+        speaker: speaker ?? "unknown",
       });
       console.log(
-        `[AUDIO] #${session.getCount()} (${utterance.lang}) "${utterance.text}"`,
+        `[AUDIO] #${session.getCount()} (${utterance.lang}) [${utterance.speaker}] "${utterance.text}"`,
       );
-      // Echo transcript to the frontend so the transcript panel populates
-      wsSend(ws, WS_EVENTS.TRANSCRIPT_FINAL, { text, lang });
+      // Echo transcript to the frontend — include speaker so UI can render diarized bubbles
+      wsSend(ws, WS_EVENTS.TRANSCRIPT_FINAL, { text, lang, speaker: utterance.speaker });
       trigger.onFinal(session);
     },
   });
@@ -398,9 +398,10 @@ wss.on("connection", (ws) => {
       const t = setTimeout(() => {
         if (ws.readyState !== ws.OPEN) return;
         const utterance = session.addUtterance({
-          text: line.text,
-          lang: line.lang,
-          ts: Date.now(),
+          text:    line.text,
+          lang:    line.lang,
+          ts:      Date.now(),
+          speaker: 'customer',  // demo script = customer voice
         });
         console.log(`[DEMO] #${session.getCount()} "${utterance.text}"`);
         // Mirror to frontend transcript so the UI shows the scripted text
