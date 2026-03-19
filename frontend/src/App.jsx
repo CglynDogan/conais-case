@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { useTabAudio } from './hooks/useTabAudio';
@@ -39,7 +39,7 @@ const CAPTURE_ERROR_MSG = {
 
 const CAPTURE_STATUS_MSG = {
   requesting: 'In the picker: select your Jitsi/call tab — not this coaching tab — then check "Share audio"',
-  capturing:  'Streaming tab audio',
+  capturing:  'Streaming tab audio + microphone',
   stopped:    'Capture stopped',
 };
 
@@ -149,6 +149,13 @@ export default function App() {
   // ── Session mode — persists after stop for export metadata ────
   const [sessionMode, setSessionMode] = useState(null);
 
+  // ── Browser call dual-input refs ────────────────────────────────
+  // Tracks whether Browser Call mode is active so handleFinalResult
+  // can route mic finals to demoLines (merged with tab audio) without
+  // depending on isCapturing state, which would create a circular dep.
+  const isBrowserCallModeRef = useRef(false);
+  const browserCallLangRef   = useRef('tr-TR');
+
   // ── Audio error (server-side: e.g. Deepgram key missing) ───────
   const [audioError, setAudioError] = useState(null);
 
@@ -192,7 +199,13 @@ export default function App() {
   // ── Speech recognition ──────────────────────────────────────────
   const handleFinalResult = useCallback(
     (result) => {
-      setFinalLines((prev) => [...prev, { text: result.text, speaker: 'me' }]);
+      // During Browser Call: mic turns merge into demoLines alongside tab audio.
+      // Outside Browser Call: mic turns go to finalLines (mic-only session).
+      if (isBrowserCallModeRef.current) {
+        setDemoLines((prev) => [...prev, { text: result.text, speaker: 'me' }]);
+      } else {
+        setFinalLines((prev) => [...prev, { text: result.text, speaker: 'me' }]);
+      }
       send(WS_EVENTS.TRANSCRIPT_FINAL, {
         text:       result.text,
         confidence: result.confidence,
@@ -220,6 +233,26 @@ export default function App() {
     error:      captureError,
     clearError: clearCaptureError,
   } = useTabAudio({ send, sendBinary });
+
+  // ── Browser call: auto-start mic when capture goes live ─────────
+  // useTabAudio.start() is async and doesn't return a success signal,
+  // so we watch isCapturing to know when the tab stream is actually live.
+  const prevIsCapturingRef = useRef(false);
+  useEffect(() => {
+    const wasCapturing = prevIsCapturingRef.current;
+    prevIsCapturingRef.current = isCapturing;
+
+    if (!isBrowserCallModeRef.current) return;
+
+    if (!wasCapturing && isCapturing) {
+      // Tab capture just went live — start mic alongside it
+      start(browserCallLangRef.current);
+    } else if (wasCapturing && !isCapturing) {
+      // Tab capture ended (user stopped or browser "Stop sharing" button)
+      isBrowserCallModeRef.current = false;
+      stop();
+    }
+  }, [isCapturing]); // start/stop are stable useCallback refs
 
   // ── Controls ────────────────────────────────────────────────────
   const resetSession = () => {
@@ -249,6 +282,7 @@ export default function App() {
   };
 
   const handleStartBrowserCall = async () => {
+    // Stop any existing mic or capture sessions cleanly before resetting
     if (isListening) stop();
     if (isCapturing) stopCapture();
     clearCaptureError();
@@ -256,11 +290,16 @@ export default function App() {
     resetSession();
     setIsDemoMode(false);
     setSessionMode('browser-call');
+    browserCallLangRef.current = lang;
+    isBrowserCallModeRef.current = true;
+    // Mic auto-starts via useEffect once isCapturing becomes true (after picker)
     await startCapture(lang);
   };
 
   const handleStopBrowserCall = () => {
+    isBrowserCallModeRef.current = false;
     stopCapture();
+    stop(); // stop mic that was auto-started with the capture
   };
 
   const handleDemo = () => {
@@ -407,7 +446,7 @@ export default function App() {
               {isDemoMode
                 ? 'Demo Transcript'
                 : isCapturing
-                  ? 'Browser Call'
+                  ? (isListening ? 'Browser Call · Mic + Tab' : 'Browser Call')
                   : callState
                     ? 'Live Call Transcript'
                     : isSessionIdle && visibleLines.length > 0
@@ -492,7 +531,7 @@ export default function App() {
           {(isListening || isCapturing || isDemoMode || visibleLines.length > 0) ? (
             <TranscriptBar
               finalLines={visibleLines}
-              interimText={(isDemoMode || isCapturing) ? '' : interimText}
+              interimText={isDemoMode ? '' : interimText}
             />
           ) : (
             <p className="panel-placeholder">
