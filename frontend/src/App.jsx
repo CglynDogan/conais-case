@@ -43,16 +43,26 @@ const CAPTURE_STATUS_MSG = {
   stopped:    'Capture stopped',
 };
 
-// Rule-based signal colors and labels
-const TONE_COLOR = {
-  price_objection: '#ef4444',
-  too_fast:        '#f59e0b',
-  long_monologue:  '#f59e0b',
+// Coaching signal colors and labels (rule-based)
+const SIGNAL_COLOR = {
+  // ── Guardrails (conversation safety) ───────────────────────
+  emotionally_escalated: '#ef4444', // red   — de-escalate immediately
+  overwhelmed:           '#8b5cf6', // violet — simplify
+  customer_closing:      '#f97316', // orange — stop pushing
+  // ── Sales coaching signals ──────────────────────────────────
+  price_objection:       '#ef4444', // red
+  over_persuading:       '#f59e0b', // amber
+  too_fast:              '#f59e0b', // amber
+  long_monologue:        '#f59e0b', // amber
 };
-const TONE_LABEL = {
-  price_objection: 'Price Objection',
-  too_fast:        'Speaking Too Fast',
-  long_monologue:  'Long Monologue',
+const SIGNAL_LABEL = {
+  emotionally_escalated: 'Escalated',
+  overwhelmed:           'Overwhelmed',
+  customer_closing:      'Closing Signal',
+  price_objection:       'Price Objection',
+  over_persuading:       'Over-Persuading',
+  too_fast:              'Speaking Too Fast',
+  long_monologue:        'Long Monologue',
 };
 
 const LANGUAGES = ['tr-TR', 'en-US'];
@@ -107,6 +117,17 @@ function getQuestionIntent(text) {
 // Rule-based signal auto-clears after this many ms to avoid stale hints
 const RULE_HINT_TTL_MS = 8_000;
 
+// ── Echo dedup helpers ───────────────────────────────────────────────
+// When Browser Call dual-input is active, the user's own voice enters
+// via both the local mic (Web Speech API) and the tab audio (Deepgram).
+// This normalises text for comparison and checks for a recent mic match.
+
+const MIC_ECHO_WINDOW_MS = 6_000;
+
+function normalizeForDedup(text) {
+  return text.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+}
+
 // ── App ──────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -155,6 +176,9 @@ export default function App() {
   // depending on isCapturing state, which would create a circular dep.
   const isBrowserCallModeRef = useRef(false);
   const browserCallLangRef   = useRef('tr-TR');
+  // Circular buffer of recent mic finals used for echo dedup.
+  // Entries: { normalized: string, ts: number }
+  const recentMicFinalsRef   = useRef([]);
 
   // ── Audio error (server-side: e.g. Deepgram key missing) ───────
   const [audioError, setAudioError] = useState(null);
@@ -179,7 +203,19 @@ export default function App() {
       }
     }
     if (msg.type === WS_EVENTS.TRANSCRIPT_FINAL && msg.payload?.text) {
-      setDemoLines((prev) => [...prev, { text: msg.payload.text, speaker: msg.payload.speaker ?? 'unknown' }]);
+      // During browser call dual-input: suppress Deepgram turns that exactly match
+      // a recent mic final — those are the user's own voice echoed through the tab.
+      // Exact-match only (after normalisation); partial overlaps are not suppressed
+      // because that risks silencing genuine remote speech.
+      if (isBrowserCallModeRef.current) {
+        const norm = normalizeForDedup(msg.payload.text);
+        const now  = Date.now();
+        const isEcho = recentMicFinalsRef.current.some(
+          (e) => now - e.ts < MIC_ECHO_WINDOW_MS && e.normalized === norm,
+        );
+        if (isEcho) return;
+      }
+      setDemoLines((prev) => [...prev, { text: msg.payload.text, speaker: msg.payload.speaker ?? 'unknown', ts: msg.payload.ts ?? Date.now() }]);
     }
     if (msg.type === WS_EVENTS.CALL_STARTED) {
       resetSession();
@@ -202,9 +238,16 @@ export default function App() {
       // During Browser Call: mic turns merge into demoLines alongside tab audio.
       // Outside Browser Call: mic turns go to finalLines (mic-only session).
       if (isBrowserCallModeRef.current) {
-        setDemoLines((prev) => [...prev, { text: result.text, speaker: 'me' }]);
+        setDemoLines((prev) => [...prev, { text: result.text, speaker: 'me', ts: result.ts }]);
+        // Record this mic final so the echo dedup in handleWsMessage can filter
+        // the same speech when Deepgram returns it from the tab audio stream.
+        const now = Date.now();
+        recentMicFinalsRef.current = [
+          ...recentMicFinalsRef.current.filter((e) => now - e.ts < MIC_ECHO_WINDOW_MS),
+          { normalized: normalizeForDedup(result.text), ts: now },
+        ];
       } else {
-        setFinalLines((prev) => [...prev, { text: result.text, speaker: 'me' }]);
+        setFinalLines((prev) => [...prev, { text: result.text, speaker: 'me', ts: result.ts }]);
       }
       send(WS_EVENTS.TRANSCRIPT_FINAL, {
         text:       result.text,
@@ -260,6 +303,7 @@ export default function App() {
     setLlmResult(null);
     setFinalLines([]);
     setDemoLines([]);
+    recentMicFinalsRef.current = [];
   };
 
   const handleToggleListen = () => {
@@ -320,9 +364,11 @@ export default function App() {
 
   // After Browser Call stops, isCapturing becomes false and we'd fall to finalLines (empty).
   // Fall back to demoLines so transcript stays visible after stop.
-  const visibleLines = (isDemoMode || isCapturing || !!callState)
+  // Sort by ts so mic and tab audio entries interleave chronologically rather than by arrival order.
+  const rawVisibleLines = (isDemoMode || isCapturing || !!callState)
     ? demoLines
     : finalLines.length > 0 ? finalLines : demoLines;
+  const visibleLines = rawVisibleLines.slice().sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
 
   // True when no session is actively running — show export button
   const isSessionIdle = !isListening && !isCapturing && !isDemoMode && !callState;
@@ -379,13 +425,13 @@ export default function App() {
             <div
               className="warning-chip"
               style={{
-                borderColor: (TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b') + '55',
-                background:  (TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b') + '18',
+                borderColor: (SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b') + '55',
+                background:  (SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b') + '18',
               }}
             >
-              <span className="warning-chip__dot" style={{ background: TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b' }} />
-              <span className="warning-chip__label" style={{ color: TONE_COLOR[ruleSignal.tone_alert?.type] ?? '#94a3b8' }}>
-                {TONE_LABEL[ruleSignal.tone_alert?.type] ?? ruleSignal.tone_alert?.type}
+              <span className="warning-chip__dot" style={{ background: SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b' }} />
+              <span className="warning-chip__label" style={{ color: SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#94a3b8' }}>
+                {SIGNAL_LABEL[ruleSignal.tone_alert?.type] ?? ruleSignal.tone_alert?.type}
               </span>
               {ruleSignal.tone_alert?.message && (
                 <span className="warning-chip__msg">{ruleSignal.tone_alert.message}</span>
@@ -519,6 +565,11 @@ export default function App() {
           </div>
           {captureStatus && !captureError && !audioError && (
             <p className="capture-status">{CAPTURE_STATUS_MSG[captureStatus]}</p>
+          )}
+          {isCapturing && isListening && (
+            <p className="capture-note">
+              Exact duplicates of your speech are filtered. Near-duplicates and ordering gaps may still occur.
+            </p>
           )}
           {micError && (
             <p className="mic-error">{MIC_ERROR_MSG[micError] ?? 'Unknown microphone error.'}</p>

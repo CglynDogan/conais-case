@@ -26,7 +26,7 @@ import { SYSTEM_PROMPT, buildUserPrompt } from "./promptBuilder.js";
 
 const TIMEOUT_MS = 10_000;
 
-const DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview";
+const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite-preview";
 const DEFAULT_OPENAI_MODEL = "gpt-5-nano";
 
 // ── Response schema (Gemini structured output) ─────────────────────

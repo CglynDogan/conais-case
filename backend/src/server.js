@@ -101,9 +101,9 @@ server.on("upgrade", (req, socket, head) => {
 
 // ── LLM analyzer (shared — stateless, safe to share across connections) ──
 const llmAnalyzer = createLlmAnalyzer({
-  provider:    process.env.LLM_PROVIDER,
-  geminiKey:   process.env.GEMINI_API_KEY,
-  openaiKey:   process.env.OPENAI_API_KEY,
+  provider: process.env.LLM_PROVIDER,
+  geminiKey: process.env.GEMINI_API_KEY,
+  openaiKey: process.env.OPENAI_API_KEY,
   geminiModel: process.env.GEMINI_MODEL,
   openaiModel: process.env.OPENAI_MODEL,
 });
@@ -310,8 +310,13 @@ wss.on("connection", (ws) => {
       console.log(
         `[AUDIO] #${session.getCount()} (${utterance.lang}) [${utterance.speaker}] "${utterance.text}"`,
       );
-      // Echo transcript to the frontend — include speaker so UI can render diarized bubbles
-      wsSend(ws, WS_EVENTS.TRANSCRIPT_FINAL, { text, lang, speaker: utterance.speaker });
+      // Echo transcript to the frontend — include speaker and ts so UI can render and order correctly
+      wsSend(ws, WS_EVENTS.TRANSCRIPT_FINAL, {
+        text,
+        lang,
+        speaker: utterance.speaker,
+        ts: utterance.ts,
+      });
       trigger.onFinal(session);
     },
   });
@@ -398,16 +403,18 @@ wss.on("connection", (ws) => {
       const t = setTimeout(() => {
         if (ws.readyState !== ws.OPEN) return;
         const utterance = session.addUtterance({
-          text:    line.text,
-          lang:    line.lang,
-          ts:      Date.now(),
-          speaker: 'customer',  // demo script = customer voice
+          text: line.text,
+          lang: line.lang,
+          ts: Date.now(),
+          speaker: "customer", // demo script = customer voice
         });
         console.log(`[DEMO] #${session.getCount()} "${utterance.text}"`);
         // Mirror to frontend transcript so the UI shows the scripted text
         wsSend(ws, WS_EVENTS.TRANSCRIPT_FINAL, {
           text: line.text,
           lang: line.lang,
+          speaker: utterance.speaker,
+          ts: utterance.ts,
         });
         trigger.onFinal(session);
       }, line.delayMs);

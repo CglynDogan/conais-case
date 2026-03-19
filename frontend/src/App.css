@@ -359,6 +359,13 @@ body {
   opacity: 0.8;
 }
 
+.capture-note {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  font-style: italic;
+}
+
 /* ── Connection panel ─────────────────────────────────────────────── */
 
 .panel--connection {
