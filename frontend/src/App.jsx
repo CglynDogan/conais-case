@@ -73,35 +73,96 @@ const SESSION_MODE_LABEL = {
   demo:         'Demo',
 };
 
-function exportTranscript({ lines, mode, coachingHistory, suggestions }) {
+// ── Export helpers ──────────────────────────────────────────────────
+
+function getSpeakerLabel(speaker) {
+  if (speaker === 'me' || speaker === 'agent')   return 'User';
+  if (speaker === 'customer')                     return 'Client';
+  if (speaker === 'speaker_0')                    return 'Speaker 0';
+  if (speaker === 'speaker_1')                    return 'Speaker 1';
+  return null; // 'unknown' or null — omit prefix
+}
+
+// Merges utterance lines and coaching entries into one chronological timeline.
+// Utterance ts: Unix ms (number). Coaching ts: "YYYY-MM-DD HH:mm:ss" string.
+function buildTimeline(lines, coachingHistory) {
+  const utterances = lines.map((line) => {
+    const isStr = typeof line === 'string';
+    return {
+      type:    'utterance',
+      speaker: isStr ? null : (line.speaker ?? null),
+      text:    isStr ? line  : line.text,
+      ts:      isStr ? 0     : (line.ts ?? 0),
+    };
+  });
+
+  const coaching = coachingHistory.map((entry) => ({
+    type:      'coaching',
+    speaker:   null,
+    text:      entry.feedback,
+    ts:        new Date(entry.ts.replace(' ', 'T')).getTime(),
+    tsDisplay: entry.ts,
+  }));
+
+  return [...utterances, ...coaching].sort((a, b) => a.ts - b.ts);
+}
+
+function triggerDownload(filename, content, mimeType) {
+  const url = URL.createObjectURL(new Blob([content], { type: mimeType }));
+  const a   = Object.assign(document.createElement('a'), { href: url, download: filename });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportMarkdown({ lines, mode, coachingHistory, suggestions }) {
   const now    = new Date();
   const ts     = now.toISOString().replace('T', ' ').slice(0, 19);
-  const fname  = `transcript-${ts.replace(/[: ]/g, '-')}.md`;
   const mLabel = SESSION_MODE_LABEL[mode] ?? 'Unknown';
 
-  const body = lines.map((line) => {
-    const text    = typeof line === 'string' ? line : line.text;
-    const speaker = typeof line === 'string' ? null  : line.speaker;
-    const prefix  = speaker === 'me' ? 'Ben: ' : speaker === 'customer' ? 'Müşteri: ' : '';
-    return `${prefix}${text}`;
+  const timeline = buildTimeline(lines, coachingHistory);
+  const body = timeline.map((entry) => {
+    if (entry.type === 'coaching') return `[Coaching]: ${entry.text}`;
+    const label = getSpeakerLabel(entry.speaker);
+    return label ? `${label}: ${entry.text}` : entry.text;
   }).join('\n');
 
   let md = `# Coaching Session Transcript\n\nDate: ${ts}\nMode: ${mLabel}\n\n---\n\n## Conversation\n\n${body}`;
 
-  if (coachingHistory.length > 0) {
-    const notes = coachingHistory
-      .map((entry, i) => `${i + 1}. [${entry.ts}] ${entry.feedback}`)
-      .join('\n');
-    md += `\n\n---\n\n## Coaching History\n\n${notes}`;
-  }
   if (suggestions.length > 0) {
-    md += `\n\n## Suggested Questions\n\n${suggestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
+    md += `\n\n---\n\n## Suggested Questions\n\n${suggestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
   }
 
-  const url = URL.createObjectURL(new Blob([md], { type: 'text/markdown;charset=utf-8' }));
-  const a   = Object.assign(document.createElement('a'), { href: url, download: fname });
-  a.click();
-  URL.revokeObjectURL(url);
+  triggerDownload(`transcript-${ts.replace(/[: ]/g, '-')}.md`, md, 'text/markdown;charset=utf-8');
+}
+
+function exportJson({ lines, mode, coachingHistory, suggestions }) {
+  const now    = new Date();
+  const ts     = now.toISOString().replace('T', ' ').slice(0, 19);
+  const mLabel = SESSION_MODE_LABEL[mode] ?? 'Unknown';
+
+  const timeline = buildTimeline(lines, coachingHistory).map((entry) => {
+    if (entry.type === 'coaching') {
+      return { type: 'coaching', text: entry.text, ts: entry.tsDisplay ?? ts };
+    }
+    return {
+      type:    'utterance',
+      speaker: getSpeakerLabel(entry.speaker) ?? entry.speaker ?? 'unknown',
+      text:    entry.text,
+      ts:      entry.ts > 0 ? new Date(entry.ts).toISOString().replace('T', ' ').slice(0, 19) : null,
+    };
+  });
+
+  const data = {
+    session:             { date: ts, mode: mLabel },
+    timeline,
+    suggested_questions: suggestions,
+  };
+
+  triggerDownload(
+    `transcript-${ts.replace(/[: ]/g, '-')}.json`,
+    JSON.stringify(data, null, 2),
+    'application/json;charset=utf-8',
+  );
 }
 
 // Lightweight keyword heuristic for question intent labels.
@@ -532,13 +593,22 @@ export default function App() {
 
               {/* Export — shown when idle and transcript has content */}
               {isSessionIdle && visibleLines.length > 0 && (
-                <button
-                  className="btn btn--export"
-                  onClick={() => exportTranscript({ lines: visibleLines, mode: sessionMode, coachingHistory, suggestions })}
-                  title="Download transcript as Markdown"
-                >
-                  ⬇ Export
-                </button>
+                <>
+                  <button
+                    className="btn btn--export"
+                    onClick={() => exportMarkdown({ lines: visibleLines, mode: sessionMode, coachingHistory, suggestions })}
+                    title="Download transcript as Markdown"
+                  >
+                    ⬇ MD
+                  </button>
+                  <button
+                    className="btn btn--export"
+                    onClick={() => exportJson({ lines: visibleLines, mode: sessionMode, coachingHistory, suggestions })}
+                    title="Download transcript as JSON"
+                  >
+                    ⬇ JSON
+                  </button>
+                </>
               )}
             </div>
           </div>
