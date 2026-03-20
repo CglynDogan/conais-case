@@ -73,7 +73,7 @@ const SESSION_MODE_LABEL = {
   demo:         'Demo',
 };
 
-function exportTranscript({ lines, mode, feedback, suggestions }) {
+function exportTranscript({ lines, mode, coachingHistory, suggestions }) {
   const now    = new Date();
   const ts     = now.toISOString().replace('T', ' ').slice(0, 19);
   const fname  = `transcript-${ts.replace(/[: ]/g, '-')}.md`;
@@ -88,8 +88,11 @@ function exportTranscript({ lines, mode, feedback, suggestions }) {
 
   let md = `# Coaching Session Transcript\n\nDate: ${ts}\nMode: ${mLabel}\n\n---\n\n## Conversation\n\n${body}`;
 
-  if (feedback) {
-    md += `\n\n---\n\n## Last Coaching Advice\n\n${feedback}`;
+  if (coachingHistory.length > 0) {
+    const notes = coachingHistory
+      .map((entry, i) => `${i + 1}. [${entry.ts}] ${entry.feedback}`)
+      .join('\n');
+    md += `\n\n---\n\n## Coaching History\n\n${notes}`;
   }
   if (suggestions.length > 0) {
     md += `\n\n## Suggested Questions\n\n${suggestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
@@ -135,6 +138,8 @@ export default function App() {
   const [ruleSignal, setRuleSignal] = useState(null);
   // LLM result (source: 'llm') — batched, every ~3 utterances
   const [llmResult,  setLlmResult]  = useState(null);
+  // Full history of non-empty, non-duplicate coaching notes for export
+  const [coachingHistory, setCoachingHistory] = useState([]);
 
   // ── Transcript / demo ──────────────────────────────────────────
   const [lang, setLang]             = useState('tr-TR');
@@ -175,13 +180,22 @@ export default function App() {
     if (msg.type === WS_EVENTS.ANALYSIS_UPDATE) {
       if (msg.payload?.source === 'rule') setRuleSignal(msg.payload);
       if (msg.payload?.source === 'llm') {
+        const incomingFeedback = msg.payload.feedback?.trim() ?? '';
         setLlmResult((prev) => ({
           ...msg.payload,
           // Retain previous non-empty feedback/questions if the new result is empty
-          feedback:            msg.payload.feedback?.trim()              || prev?.feedback            || '',
+          feedback:            incomingFeedback                          || prev?.feedback            || '',
           suggested_questions: msg.payload.suggested_questions?.length   ? msg.payload.suggested_questions
                                                                          : (prev?.suggested_questions ?? []),
         }));
+        if (incomingFeedback) {
+          setCoachingHistory((prev) => {
+            // Dedup: skip if the last entry has the exact same text
+            if (prev.length > 0 && prev[prev.length - 1].feedback === incomingFeedback) return prev;
+            const entryTs = new Date().toISOString().replace('T', ' ').slice(0, 19);
+            return [...prev, { feedback: incomingFeedback, ts: entryTs }];
+          });
+        }
       }
     }
     if (msg.type === WS_EVENTS.TRANSCRIPT_FINAL && msg.payload?.text) {
@@ -275,6 +289,7 @@ export default function App() {
   const resetSession = () => {
     setRuleSignal(null);
     setLlmResult(null);
+    setCoachingHistory([]);
     setFinalLines([]);
     setDemoLines([]);
     recentMicFinalsRef.current = [];
@@ -519,7 +534,7 @@ export default function App() {
               {isSessionIdle && visibleLines.length > 0 && (
                 <button
                   className="btn btn--export"
-                  onClick={() => exportTranscript({ lines: visibleLines, mode: sessionMode, feedback, suggestions })}
+                  onClick={() => exportTranscript({ lines: visibleLines, mode: sessionMode, coachingHistory, suggestions })}
                   title="Download transcript as Markdown"
                 >
                   ⬇ Export
