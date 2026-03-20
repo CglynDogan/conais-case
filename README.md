@@ -167,15 +167,14 @@ Browser (React 18 + Vite :5173)
 │
 Backend (Node.js + Express + ws :3001)
 │
-├── server.js                 WS router — per-connection wiring, demo + browser-call + Twilio paths
+├── server.js                 WS router — per-connection wiring, demo + browser-call paths
 ├── transcriptSession.js      Per-connection utterance store, context window
 ├── heuristics.js             7 rule-based signals with priority ordering and per-type cooldowns
 ├── analysisTrigger.js        Two-path trigger: immediate (every final) + batched (size/silence)
 ├── llmAnalyzer.js            Gemini/OpenAI call, responseSchema, 10s timeout, SAFE_FALLBACK
 ├── promptBuilder.js          System prompt + dynamic user prompt with speaker annotation
 ├── audioStream.js            Browser audio handler — binary WS chunks → Deepgram → pipeline
-├── sttProvider.js            Deepgram streaming STT (WebM/Opus for browser; mulaw for Twilio)
-└── twilioStream.js           Twilio MediaStream handler (legacy path — still functional)
+└── sttProvider.js            Deepgram streaming STT (WebM/Opus from browser MediaRecorder)
 
 Shared (no build step)
 └── shared/events.js          WS event name constants — imported by both sides
@@ -191,8 +190,6 @@ Every finalized utterance triggers two independent paths:
 | **Batched** | After 3 finals OR 3s silence | LLM called → `analysis:update { source: "llm" }` |
 
 The paths are fully independent. An in-flight LLM call does not block or delay the heuristics path.
-
-Twilio path uses tighter batching (2 utterances / 1.5s silence) because phone conversations move faster.
 
 ### Speaker attribution
 
@@ -285,8 +282,6 @@ Copy `backend/.env.example` to `backend/.env` and fill in the required keys.
 | `OPENAI_MODEL` | No | `gpt-5-nano` | Override OpenAI model |
 | `DEEPGRAM_API_KEY` | For Browser Call mode | — | Deepgram streaming STT. Absent → no tab transcripts |
 | `DEEPGRAM_MODEL` | No | `nova-3` | Deepgram STT model |
-| `TWILIO_STREAM_URL` | For Twilio path only | — | `wss://your-host/twilio-stream` |
-| `TWILIO_CALL_LANG` | For Twilio path only | `tr-TR` | Default language for incoming calls |
 
 If neither `GEMINI_API_KEY` nor `OPENAI_API_KEY` is present, the backend starts in **rule-only mode** — heuristics fire normally, the LLM path is a silent no-op. The app is still usable.
 
@@ -312,8 +307,6 @@ All messages use the shape `{ type: string, payload: object }`. Event names live
 | `audio:error` | server → client | Server-side audio error (e.g. Deepgram key missing). `payload: { reason }` |
 | `demo:trigger` | client → server | Start scripted demo playback. `payload: { lang }` |
 | `analysis:update` | server → client | Coaching payload — rule-based or LLM (see shapes above) |
-| `call:started` | server → client | Twilio call connected. `payload: { callSid, lang }` |
-| `call:ended` | server → client | Twilio call ended. `payload: {}` |
 
 ### `analysis:update` — rule-based
 
@@ -333,28 +326,12 @@ See LLM output shape above.
 
 ---
 
-## Twilio Path (Legacy)
-
-The Twilio path streams phone call audio through the backend for real-time coaching. It remains functional but is not the primary focus of this prototype — Browser Call mode handles the same use case without phone infrastructure.
-
-When a Twilio call arrives:
-1. Twilio dials `POST /twiml` — backend returns TwiML that opens a MediaStream to `/twilio-stream`
-2. Twilio sends mulaw 8kHz audio frames over WebSocket
-3. Backend forwards audio to Deepgram
-4. Transcripts flow through the same coaching pipeline
-5. Connected browser clients receive `transcript:final`, `analysis:update`, `call:started`, and `call:ended` events
-
-The browser UI shows a purple **Live Call mm:ss** indicator while a call is active.
-
----
-
 ## HTTP Endpoints
 
 | Route | Description |
 |-------|-------------|
 | `GET /` | Service status — confirms backend is up, LLM mode, connected client count |
 | `GET /health` | Same response — for automated health checks |
-| `POST /twiml` | Returns TwiML for Twilio voice webhook |
 
 Example status response:
 
@@ -365,7 +342,6 @@ Example status response:
   "websocket": "ready",
   "llm": "enabled",
   "clients": 1,
-  "activeCall": false,
   "timestamp": 1700000000000
 }
 ```

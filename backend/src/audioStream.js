@@ -6,9 +6,7 @@
  * Audio source: browser tab / system audio via getDisplayMedia + MediaRecorder
  * Format: WebM/Opus at 48kHz (browser default)
  *
- * This module is the browser-call equivalent of twilioStream.js — it drives
- * the same sttProvider → transcript → session → trigger pipeline, but the
- * audio comes from the browser instead of from Twilio.
+ * Drives the sttProvider → transcript → session → trigger pipeline.
  *
  * Usage (one instance per browser WS connection):
  *   const handler = createAudioStreamHandler({ apiKey, onTranscript });

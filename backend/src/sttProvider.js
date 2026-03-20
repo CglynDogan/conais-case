@@ -1,14 +1,15 @@
 /**
  * sttProvider.js
  *
- * Deepgram streaming STT client for Twilio MediaStream audio.
+ * Deepgram streaming STT client.
+ * Audio source: Browser Call — WebM/Opus from MediaRecorder (container=webm).
  *
- * Receives mulaw 8kHz audio chunks from the Twilio path and streams them
- * to Deepgram's WebSocket API. Emits 'transcript' only when Deepgram
- * signals both is_final AND speech_final — i.e. a committed sentence.
+ * Emits 'transcript' on every is_final result from Deepgram.
+ * speech_final is NOT required — with interim_results:false every event
+ * Deepgram sends already has is_final=true (non-overlapping committed segments).
  *
  * Events emitted:
- *   'transcript'  { text: string }
+ *   'transcript'  { text: string, speaker: string | null }
  *   'error'       Error
  *   'close'       (no args)
  */
@@ -23,7 +24,7 @@ const DEEPGRAM_URL = 'wss://api.deepgram.com/v1/listen';
  *   apiKey:      string,
  *   language?:   string,  // e.g. 'tr-TR' — base code used ('tr')
  *   encoding?:   string,  // Deepgram encoding param. Default: 'opus' (browser WebM/Opus)
- *   sampleRate?: number,  // Default: 48000 (browser capture). Twilio mulaw uses 8000.
+ *   sampleRate?: number,  // Default: 48000 (browser capture rate).
  *   container?:  string | null, // 'webm' for browser MediaRecorder output; null to omit.
  * }} opts
  * @returns {{ write(chunk: Buffer): void, close(): void, on: Function, off: Function }}
@@ -57,7 +58,7 @@ export function createSttProvider({
     // Deepgram closes with 1011 if encoding is also sent — they are mutually exclusive.
     paramObj.container = container;
   } else {
-    // Raw audio (e.g. Twilio mulaw): encoding and sample_rate must be explicit.
+    // Raw audio (no container header): encoding and sample_rate must be explicit.
     paramObj.encoding    = encoding;
     paramObj.sample_rate = String(sampleRate);
   }

@@ -19,8 +19,8 @@
  * @param {{
  *   onImmediate: (session: object) => void,
  *   onBatch:     (session: object) => void,
- *   batchSize?:  number,   // finals before LLM trigger (default 3; Twilio path uses 2)
- *   silenceMs?:  number,   // quiet window before forced trigger (default 3000; Twilio uses 1500)
+ *   batchSize?:  number,   // finals before LLM trigger (default 3)
+ *   silenceMs?:  number,   // quiet window before forced trigger (default 3000)
  * }} callbacks
  */
 export function createAnalysisTrigger({ onImmediate, onBatch, batchSize = 3, silenceMs = 3_000 }) {

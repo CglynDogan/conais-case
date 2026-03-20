@@ -4,11 +4,12 @@
  * Session-level utterance store for one WebSocket connection.
  * Holds the raw transcript as a time-ordered array of finalized utterances.
  *
- * Speaker field:
- *   'customer' | 'agent' | 'unknown'
- *   The current Web Speech API path always produces 'unknown'.
- *   A future diarization layer can populate the correct value
- *   without changing any downstream code.
+ * Speaker field — values in use:
+ *   'agent'     — mic input (known: salesperson's own microphone)
+ *   'customer'  — demo script lines (known: scripted customer turns)
+ *   'speaker_0' — Deepgram diarized, first voice (role unknown)
+ *   'speaker_1' — Deepgram diarized, second voice (role unknown)
+ *   'unknown'   — undifferentiated stream (no diarization available)
  *
  * Lifecycle: created on connection open, discarded on connection close.
  */
@@ -21,7 +22,7 @@ const CONTEXT_WINDOW_SIZE = 10;
  *   lang:      string,
  *   ts:        number,
  *   wordCount: number,
- *   speaker:   'customer' | 'agent' | 'unknown',
+ *   speaker:   'agent' | 'customer' | 'speaker_0' | 'speaker_1' | 'unknown',
  * }} Utterance
  */
 
@@ -79,15 +80,6 @@ export function createTranscriptSession() {
     return utterances.slice(-n);
   }
 
-  /**
-   * Returns the last `n` utterances as plain text strings.
-   * @param {number} [n]
-   * @returns {string[]}
-   */
-  function getContextText(n = CONTEXT_WINDOW_SIZE) {
-    return utterances.slice(-n).map((u) => u.text);
-  }
-
   /** Total number of finalized utterances in this session. */
   function getCount() {
     return utterances.length;
@@ -99,7 +91,6 @@ export function createTranscriptSession() {
     getLatest,
     getPrevious,
     getContextWindow,
-    getContextText,
     getCount,
   };
 }

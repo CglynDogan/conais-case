@@ -6,7 +6,6 @@
  *   server:*      — sent by the server to the browser
  *   transcript:*  — speech recognition data (client → server)
  *   analysis:*    — coaching analysis results (server → client)
- *   system:*      — connection / status events (bidirectional)
  *   demo:*        — demo mode control (client → server)
  *
  * Backend (ESM):  import { WS_EVENTS } from '../../shared/events.js'
@@ -37,12 +36,6 @@ export const WS_EVENTS = {
    */
   ANALYSIS_UPDATE: 'analysis:update',
 
-  /** Non-fatal server-side error notification. */
-  SYSTEM_ERROR: 'system:error',
-
-  /** General status message (e.g. "buffer flushed", "LLM timeout"). */
-  SYSTEM_STATUS: 'system:status',
-
   // ── Browser audio streaming (client → server) ─────────────────
   /** Browser-call mode starting. payload: { lang } — resets session on server. */
   AUDIO_START: 'audio:start',
@@ -54,10 +47,4 @@ export const WS_EVENTS = {
   /** Server-side audio error (e.g. Deepgram key missing). payload: { reason } */
   AUDIO_ERROR: 'audio:error',
 
-  // ── Twilio call lifecycle (server → client) ────────────────────
-  /** A Twilio call has connected and STT is active. payload: { callSid, lang } */
-  CALL_STARTED: 'call:started',
-
-  /** The active Twilio call has ended. payload: {} */
-  CALL_ENDED: 'call:ended',
 };

@@ -71,7 +71,6 @@ const SESSION_MODE_LABEL = {
   mic:          'Mic Mode',
   'browser-call': 'Browser Call',
   demo:         'Demo',
-  twilio:       'Twilio Call',
 };
 
 function exportTranscript({ lines, mode, feedback, suggestions }) {
@@ -143,29 +142,12 @@ export default function App() {
   const [demoLines, setDemoLines]   = useState([]);
   const [isDemoMode, setIsDemoMode] = useState(false);
 
-  // ── Twilio call state ───────────────────────────────────────────
-  // null when no call active; { callSid, lang } when a Twilio call is live
-  const [callState,   setCallState]   = useState(null);
-  const [callElapsed, setCallElapsed] = useState(0);
-
   // Auto-clear rule hint after TTL to avoid stale signals
   useEffect(() => {
     if (!ruleSignal) return;
     const id = setTimeout(() => setRuleSignal(null), RULE_HINT_TTL_MS);
     return () => clearTimeout(id);
   }, [ruleSignal]);
-
-  // Elapsed timer — counts seconds while a call is active
-  useEffect(() => {
-    if (!callState) {
-      setCallElapsed(0);
-      return;
-    }
-    const interval = setInterval(() => {
-      setCallElapsed((s) => s + 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [callState]);
 
   // ── Session mode — persists after stop for export metadata ────
   const [sessionMode, setSessionMode] = useState(null);
@@ -216,14 +198,6 @@ export default function App() {
         if (isEcho) return;
       }
       setDemoLines((prev) => [...prev, { text: msg.payload.text, speaker: msg.payload.speaker ?? 'unknown', ts: msg.payload.ts ?? Date.now() }]);
-    }
-    if (msg.type === WS_EVENTS.CALL_STARTED) {
-      resetSession();
-      setSessionMode('twilio');
-      setCallState({ callSid: msg.payload?.callSid, lang: msg.payload?.lang });
-    }
-    if (msg.type === WS_EVENTS.CALL_ENDED) {
-      setCallState(null);
     }
     if (msg.type === WS_EVENTS.AUDIO_ERROR) {
       setAudioError(msg.payload?.reason ?? 'error');
@@ -365,13 +339,13 @@ export default function App() {
   // After Browser Call stops, isCapturing becomes false and we'd fall to finalLines (empty).
   // Fall back to demoLines so transcript stays visible after stop.
   // Sort by ts so mic and tab audio entries interleave chronologically rather than by arrival order.
-  const rawVisibleLines = (isDemoMode || isCapturing || !!callState)
+  const rawVisibleLines = (isDemoMode || isCapturing)
     ? demoLines
     : finalLines.length > 0 ? finalLines : demoLines;
   const visibleLines = rawVisibleLines.slice().sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
 
   // True when no session is actively running — show export button
-  const isSessionIdle = !isListening && !isCapturing && !isDemoMode && !callState;
+  const isSessionIdle = !isListening && !isCapturing && !isDemoMode;
 
   // ── Render ───────────────────────────────────────────────────────
   return (
@@ -381,17 +355,11 @@ export default function App() {
       <header className="app-header">
         <h1 className="app-title">Sales Call Coach</h1>
         <div className="header-right">
-          {callState && (
-            <div className="conn-status" style={{ background: '#7c3aed' }} title={`Call SID: ${callState.callSid}`}>
-              <span className="conn-dot" style={{ background: '#fff', animation: 'pulse 1.2s infinite' }} />
-              Live Call {String(Math.floor(callElapsed / 60)).padStart(2, '0')}:{String(callElapsed % 60).padStart(2, '0')}
-            </div>
-          )}
           <button
             className="btn btn--demo"
             onClick={handleDemo}
-            disabled={connStatus !== 'connected' || !!callState}
-            title={callState ? 'Demo unavailable during a live call' : 'Run scripted demo'}
+            disabled={connStatus !== 'connected'}
+            title="Run scripted demo"
           >
             Demo
           </button>
@@ -493,11 +461,9 @@ export default function App() {
                 ? 'Demo Transcript'
                 : isCapturing
                   ? (isListening ? 'Browser Call · Mic + Tab' : 'Browser Call')
-                  : callState
-                    ? 'Live Call Transcript'
-                    : isSessionIdle && visibleLines.length > 0
-                      ? `${SESSION_MODE_LABEL[sessionMode] ?? 'Session'} — Ended`
-                      : 'Live Transcript'}
+                  : isSessionIdle && visibleLines.length > 0
+                    ? `${SESSION_MODE_LABEL[sessionMode] ?? 'Session'} — Ended`
+                    : 'Live Transcript'}
             </span>
             <div className="mic-controls">
               {/* Language toggle — hidden during demo or browser-call capture */}
@@ -517,7 +483,7 @@ export default function App() {
                   <button
                     className="btn btn--browser"
                     onClick={handleStartBrowserCall}
-                    disabled={connStatus !== 'connected' || isListening || !!callState || captureStatus === 'requesting'}
+                    disabled={connStatus !== 'connected' || isListening || captureStatus === 'requesting'}
                     title="Capture browser tab audio (Jitsi, Meet, etc.)"
                   >
                     🖥 Browser Call
@@ -533,8 +499,6 @@ export default function App() {
                   <button
                     className={`btn ${isListening ? 'btn--stop' : 'btn--start'}`}
                     onClick={handleToggleListen}
-                    disabled={!!callState}
-                    title={callState ? 'Mic unavailable during a live call' : undefined}
                   >
                     {isListening ? '⏹ Stop' : '🎙 Start'}
                   </button>
