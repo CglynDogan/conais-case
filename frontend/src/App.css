@@ -32,7 +32,7 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  max-width: 960px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 16px;
   gap: var(--gap);
@@ -56,6 +56,7 @@ body {
 .header-right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -80,10 +81,70 @@ body {
 /* ── Main layout ──────────────────────────────────────────────────── */
 
 .app-main {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  grid-template-rows: 1fr auto;
+  gap: var(--gap);
+  align-items: start;
+  flex: 1;
+}
+
+.col {
   display: flex;
   flex-direction: column;
   gap: var(--gap);
-  flex: 1;
+  min-width: 0;
+}
+
+/* Connection panel spans both columns */
+.panel--connection {
+  grid-column: 1 / -1;
+}
+
+/* ── Responsive breakpoints ───────────────────────────────────────── */
+
+/* Medium: small laptops — switch from 3fr 2fr to equal halves */
+@media (max-width: 900px) {
+  .app-main {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* Narrow: tablet / large phone — single column */
+@media (max-width: 680px) {
+  .app-main {
+    grid-template-columns: 1fr;
+  }
+  .panel--connection {
+    grid-column: 1;
+  }
+  .app {
+    padding: 10px;
+  }
+  .panel--transcript {
+    min-height: 300px;
+  }
+  /* Prevent last-event from pushing other items off-screen */
+  .last-event {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+/* Very small: compact phones */
+@media (max-width: 420px) {
+  .app {
+    padding: 8px;
+  }
+  .panel {
+    padding: 10px 12px;
+  }
+  .sq-primary {
+    padding: 10px 12px;
+  }
+  .sq-alt {
+    padding: 8px 10px;
+  }
 }
 
 /* ── Panels (base) ────────────────────────────────────────────────── */
@@ -148,6 +209,15 @@ body {
 
 .coaching-card__empty {
   font-size: 13px;
+}
+
+.coaching-card__prev {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-muted);
 }
 
 /* ── Warning chips (rule-based signals) ──────────────────────────── */
@@ -316,13 +386,15 @@ body {
 /* ── Live Transcript (secondary) ──────────────────────────────────── */
 
 .panel--transcript {
-  min-height: 100px;
+  min-height: 420px;
 }
 
 .transcript-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-bottom: 10px;
 }
 
@@ -333,6 +405,7 @@ body {
 .mic-controls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 

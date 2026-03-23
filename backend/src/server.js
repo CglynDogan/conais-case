@@ -9,6 +9,50 @@ import { createAnalysisTrigger } from "./analysisTrigger.js";
 import { createLlmAnalyzer, SAFE_FALLBACK } from "./llmAnalyzer.js";
 import { createAudioStreamHandler } from "./audioStream.js";
 
+// ── Meaningful agent turn filter ─────────────────────────────────────
+// Used by the Browser Call participation gate.
+// Returns true only when the local mic turn is substantive enough to indicate
+// the coached user is actively participating — not just backchannelling.
+//
+// Rules (both must pass):
+//   1. Word count >= MIN_AGENT_WORDS
+//   2. Normalised text is NOT in the backchannel set
+//
+// This is intentionally simple and fast — no NLP, no extra LLM call.
+
+const MIN_AGENT_WORDS = 3;
+
+const BACKCHANNEL_PHRASES = new Set([
+  // ── Turkish single-word ──────────────────────────────
+  'anlıyorum', 'anladım', 'evet', 'hayır', 'tamam', 'tabii', 'tabiki',
+  'tabi', 'hıhı', 'hmm', 'hm', 'ee', 'aa', 'oh', 'okey', 'ok',
+  'peki', 'haklısınız', 'doğru', 'kesinlikle', 'biliyorum', 'biliyoruz',
+  // ── Turkish multi-word acknowledgement combos ────────
+  'hı hı', 'evet evet', 'evet tamam', 'evet anlıyorum', 'evet anladım',
+  'tamam tamam', 'tamam anladım', 'tamam anlıyorum', 'tamam peki',
+  'anladım evet', 'anladım tamam', 'anlıyorum evet', 'anlıyorum tamam',
+  'tabii tabii', 'tabii ki', 'tabii evet', 'evet tabii', 'evet kesinlikle',
+  'doğru doğru', 'doğru tabii', 'haklısınız evet', 'evet haklısınız',
+  // ── English single-word ──────────────────────────────
+  'okay', 'yes', 'no', 'sure', 'right', 'understood', 'indeed',
+  'mm', 'yep', 'yup', 'cool', 'absolutely', 'exactly',
+  'uh huh', 'uh-huh',
+  // ── English multi-word acknowledgement combos ────────
+  'got it', 'i see', 'of course', 'alright then', 'okay sure',
+  'yes sure', 'yes of course', 'yes absolutely', 'yes exactly',
+  'right okay', 'right sure', 'sure okay', 'sure yes',
+  'okay i see', 'okay got it', 'i see okay', 'i understand',
+  'i understand yes', 'yes i see', 'yes i understand',
+  'that makes sense', 'makes sense', 'noted', 'noted okay',
+]);
+
+function isMeaningfulAgentTurn(text) {
+  const normalized = text.trim().toLowerCase().replace(/[.,!?!…]+$/, '').trim();
+  if (BACKCHANNEL_PHRASES.has(normalized)) return false;
+  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+  return wordCount >= MIN_AGENT_WORDS;
+}
+
 // ── Demo scripts ─────────────────────────────────────────────────────
 // Scripted utterances replayed through the real pipeline on demo:trigger.
 // Goes through the same heuristics + LLM path as live speech — not mocked.
@@ -156,13 +200,21 @@ wss.on("connection", (ws) => {
   // If a new batch trigger fires while a call is in-flight, it is skipped.
   // The silence-timer path in analysisTrigger will catch the trailing content.
   let isLlmBusy = false;
-  // lastFeedback: passed to prompt builder to avoid repeating the same coaching note.
-  let lastFeedback = "";
+  // recentFeedbacks: last 3 coaching notes passed to the prompt for synthesis.
+  // The model synthesizes them into one coherent directive instead of repeating.
+  let recentFeedbacks = [];
+  // lastAgentTurnTs: timestamp of the most recent local-mic turn (speaker='agent').
+  // Active Coaching Mode is allowed only within ACTIVE_WINDOW_MS of the last agent turn.
+  // Beyond that window the session reverts to Observer Mode automatically.
+  const ACTIVE_WINDOW_MS = 12_000; // 12s — gives room for longer customer responses after agent speaks
+  let lastAgentTurnTs = 0;
 
   // Demo playback timers — cleared on reset so a second demo:trigger is clean
   const demoTimers = [];
 
   const trigger = createAnalysisTrigger({
+    silenceMs:         1_500, // agent-side fallback (agent turns fire immediately now)
+    customerSilenceMs: 1_200, // customer-side: fire 1.2s after customer stops — targets 2–3s total coaching latency
     // ── Immediate path: heuristics ────────────────────────
     onImmediate(sess) {
       const signal = heuristics.run({
@@ -188,6 +240,16 @@ wss.on("connection", (ws) => {
         return;
       }
 
+      // Coaching mode: when Browser Call is active, switch between Customer Insight
+      // and Full Coaching based on whether the agent has spoken recently.
+      // Customer Insight = agent not yet in window → LLM still runs but won't evaluate agent response quality.
+      // Full Coaching    = agent spoke within ACTIVE_WINDOW_MS → full turn-aware analysis.
+      // In mic/demo mode audioStream.isActive() is false → always Full Coaching.
+      const coachingMode =
+        audioStream.isActive() && Date.now() - lastAgentTurnTs > ACTIVE_WINDOW_MS
+          ? "customer_insight"
+          : "full";
+
       if (isLlmBusy) {
         console.log("[LLM] Skipping batch — previous call in flight");
         return;
@@ -197,14 +259,15 @@ wss.on("connection", (ws) => {
       const startMs = Date.now();
 
       try {
-        const result = await llmAnalyzer.analyze(sess, { lastFeedback });
+        const result = await llmAnalyzer.analyze(sess, { recentFeedbacks, coachingMode });
         const elapsed = Date.now() - startMs;
         console.log(
-          `[LLM] Response in ${elapsed}ms — feedback:"${result.feedback}" questions:${result.suggested_questions.length}`,
+          `[LLM] mode:${coachingMode} response in ${elapsed}ms — feedback:"${result.feedback}" questions:${result.suggested_questions.length}`,
         );
 
-        // Track last feedback for dedup in the next prompt
-        if (result.feedback) lastFeedback = result.feedback;
+        // Keep last 3 feedbacks for synthesis — enough context for the model to
+        // detect repetition without carrying stale themes from early in the call.
+        if (result.feedback) recentFeedbacks = [...recentFeedbacks, result.feedback].slice(-3);
 
         // Only send if there is something meaningful to show
         if (
@@ -283,6 +346,12 @@ wss.on("connection", (ws) => {
       case WS_EVENTS.TRANSCRIPT_FINAL: {
         if (!payload?.text?.trim()) break;
 
+        // Local mic turns refresh the participation window only when substantive.
+        // Backchannels and very short phrases are ignored to prevent false activation.
+        if (payload.speaker === "agent" && isMeaningfulAgentTurn(payload.text ?? "")) {
+          lastAgentTurnTs = Date.now();
+        }
+
         const utterance = session.addUtterance(payload);
         console.log(
           `[TRANSCRIPT:FINAL] #${session.getCount()} (${utterance.lang}) "${utterance.text}"`,
@@ -298,8 +367,9 @@ wss.on("connection", (ws) => {
         trigger.reset();
         heuristics.reset();
         isLlmBusy = false;
-        lastFeedback = "";
-        audioStream.handleStart(payload?.lang ?? "tr-TR");
+        recentFeedbacks = [];
+        lastAgentTurnTs = 0; // new session — participation window reset
+        audioStream.handleStart(payload?.lang ?? "tr-TR", payload?.source ?? "browser");
         break;
       }
 
@@ -317,7 +387,7 @@ wss.on("connection", (ws) => {
         trigger.reset();
         heuristics.reset();
         isLlmBusy = false;
-        lastFeedback = "";
+        recentFeedbacks = [];
         console.log(
           `[DEMO] Starting demo playback (${payload?.lang ?? "tr-TR"})`,
         );

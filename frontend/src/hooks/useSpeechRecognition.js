@@ -149,7 +149,14 @@ export function useSpeechRecognition({ onFinalResult, onInterimResult } = {}) {
           return;
         }
 
-        // no-speech, network, audio-capture: let onend handle restart
+        if (code === 'no-speech') {
+          // Browser silence timeout — expected when no one is speaking.
+          // Reset the counter so repeated silence periods never exhaust restart attempts.
+          restartCountRef.current = 0;
+          return; // let onend handle the transparent restart
+        }
+
+        // network, audio-capture: let onend handle restart
       };
     },
     [scheduleRestart],

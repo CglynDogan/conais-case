@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { useTabAudio } from './hooks/useTabAudio';
+import { useMicStream } from './hooks/useMicStream';
 import { TranscriptBar } from './components/TranscriptBar';
 import { WS_EVENTS } from './constants';
 import './App.css';
@@ -22,8 +23,7 @@ const CONN_COLOR = {
 };
 const MIC_ERROR_MSG = {
   'not-allowed': 'Microphone access denied. Check browser permissions.',
-  unsupported:   'Web Speech API is not supported in this browser. Use Chrome.',
-  error:         'Speech recognition stopped unexpectedly.',
+  error:         'Microphone streaming failed unexpectedly.',
 };
 
 const CAPTURE_ERROR_MSG = {
@@ -38,7 +38,7 @@ const CAPTURE_ERROR_MSG = {
 };
 
 const CAPTURE_STATUS_MSG = {
-  requesting: 'In the picker: select your Jitsi/call tab — not this coaching tab — then check "Share audio"',
+  requesting: '⚡ Act fast — select your call tab now and check "Share audio". Every second counts.',
   capturing:  'Streaming tab audio + microphone',
   stopped:    'Capture stopped',
 };
@@ -100,7 +100,7 @@ function buildTimeline(lines, coachingHistory) {
     type:      'coaching',
     speaker:   null,
     text:      entry.feedback,
-    ts:        new Date(entry.ts.replace(' ', 'T')).getTime(),
+    ts:        new Date(entry.ts.replace(' ', 'T') + 'Z').getTime(), // 'Z' forces UTC, matching Date.now() basis of utterance ts
     tsDisplay: entry.ts,
   }));
 
@@ -180,6 +180,7 @@ function getQuestionIntent(text) {
 // Rule-based signal auto-clears after this many ms to avoid stale hints
 const RULE_HINT_TTL_MS = 8_000;
 
+
 // ── Echo dedup helpers ───────────────────────────────────────────────
 // When Browser Call dual-input is active, the user's own voice enters
 // via both the local mic (Web Speech API) and the tab audio (Deepgram).
@@ -215,6 +216,15 @@ export default function App() {
     return () => clearTimeout(id);
   }, [ruleSignal]);
 
+  // Timing diagnostic — logs when llmResult state change reaches a render.
+  // Compare with backend "[LLM] Response in Xms" + "[UI:TIMING] received at" logs
+  // to measure: (a) WS transit, (b) React render delay.
+  useEffect(() => {
+    if (llmResult?.feedback) {
+      console.log(`[UI:TIMING] llmResult with feedback rendered at ${Date.now()}`);
+    }
+  }, [llmResult]);
+
   // ── Session mode — persists after stop for export metadata ────
   const [sessionMode, setSessionMode] = useState(null);
 
@@ -241,6 +251,7 @@ export default function App() {
     if (msg.type === WS_EVENTS.ANALYSIS_UPDATE) {
       if (msg.payload?.source === 'rule') setRuleSignal(msg.payload);
       if (msg.payload?.source === 'llm') {
+        console.log(`[UI:TIMING] analysis:update(llm) received at ${Date.now()}`);
         const incomingFeedback = msg.payload.feedback?.trim() ?? '';
         setLlmResult((prev) => ({
           ...msg.payload,
@@ -281,6 +292,9 @@ export default function App() {
 
   const { status: connStatus, send, sendBinary } = useWebSocket(handleWsMessage);
 
+  // ── Mic stream (Deepgram — standalone mic mode only) ────────────
+  const micStream = useMicStream({ send, sendBinary });
+
   // ── Speech recognition ──────────────────────────────────────────
   const handleFinalResult = useCallback(
     (result) => {
@@ -313,7 +327,7 @@ export default function App() {
     [send],
   );
 
-  const { isListening, interimText, error: micError, isSupported, start, stop } =
+  const { isListening, interimText, start, stop } =
     useSpeechRecognition({ onFinalResult: handleFinalResult, onInterimResult: handleInterimResult });
 
   // ── Browser-call mode (tab audio capture) ───────────────────────
@@ -356,27 +370,30 @@ export default function App() {
     recentMicFinalsRef.current = [];
   };
 
-  const handleToggleListen = () => {
-    if (isListening) {
-      stop();
+  const handleToggleListen = async () => {
+    if (micStream.isStreaming) {
+      micStream.stop();
     } else {
       clearCaptureError();
+      micStream.clearError();
       setAudioError(null);
       resetSession();
       setIsDemoMode(false);
       setSessionMode('mic');
-      start(lang);
+      await micStream.start(lang);
     }
   };
 
   const handleLangToggle = () => {
     const next = LANGUAGES[(LANGUAGES.indexOf(lang) + 1) % LANGUAGES.length];
     setLang(next);
+    if (micStream.isStreaming) { micStream.stop(); setTimeout(() => micStream.start(next), 200); }
     if (isListening) { stop(); setTimeout(() => start(next), 200); }
   };
 
   const handleStartBrowserCall = async () => {
     // Stop any existing mic or capture sessions cleanly before resetting
+    if (micStream.isStreaming) micStream.stop();
     if (isListening) stop();
     if (isCapturing) stopCapture();
     clearCaptureError();
@@ -397,6 +414,7 @@ export default function App() {
   };
 
   const handleDemo = () => {
+    if (micStream.isStreaming) micStream.stop();
     if (isListening) stop();
     if (isCapturing) stopCapture();
     clearCaptureError();
@@ -412,16 +430,16 @@ export default function App() {
   const suggestions = llmResult?.suggested_questions ?? [];
   const infoCard    = llmResult?.info_card           ?? null;
 
-  // After Browser Call stops, isCapturing becomes false and we'd fall to finalLines (empty).
-  // Fall back to demoLines so transcript stays visible after stop.
-  // Sort by ts so mic and tab audio entries interleave chronologically rather than by arrival order.
-  const rawVisibleLines = (isDemoMode || isCapturing)
+  // After any session ends, fall back to demoLines so transcript stays visible.
+  // Deepgram mic transcripts arrive via WS (TRANSCRIPT_FINAL → demoLines), not finalLines.
+  // Sort by ts so entries interleave chronologically rather than by arrival order.
+  const rawVisibleLines = (isDemoMode || isCapturing || micStream.isStreaming)
     ? demoLines
     : finalLines.length > 0 ? finalLines : demoLines;
   const visibleLines = rawVisibleLines.slice().sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
 
   // True when no session is actively running — show export button
-  const isSessionIdle = !isListening && !isCapturing && !isDemoMode;
+  const isSessionIdle = !micStream.isStreaming && !isListening && !isCapturing && !isDemoMode;
 
   // ── Render ───────────────────────────────────────────────────────
   return (
@@ -448,88 +466,8 @@ export default function App() {
 
       <main className="app-main">
 
-        {/* ── 1. Primary AI Coaching Card ── */}
-        <div className="panel coaching-card">
-          <div className="coaching-card__header">
-            <span className="panel-label" style={{ marginBottom: 0 }}>AI Coaching</span>
-            <span className="coaching-card__badge">AI Coach</span>
-          </div>
-          {feedback ? (
-            <p className="coaching-card__text">{feedback}</p>
-          ) : (
-            <p className="panel-placeholder coaching-card__empty">
-              Coaching advice will appear once the conversation starts.
-            </p>
-          )}
-        </div>
-
-        {/* ── 2. Warning Chips — rule-based signals, auto-expire ── */}
-        {ruleSignal && (
-          <div className="warning-row">
-            <div
-              className="warning-chip"
-              style={{
-                borderColor: (SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b') + '55',
-                background:  (SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b') + '18',
-              }}
-            >
-              <span className="warning-chip__dot" style={{ background: SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b' }} />
-              <span className="warning-chip__label" style={{ color: SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#94a3b8' }}>
-                {SIGNAL_LABEL[ruleSignal.tone_alert?.type] ?? ruleSignal.tone_alert?.type}
-              </span>
-              {ruleSignal.tone_alert?.message && (
-                <span className="warning-chip__msg">{ruleSignal.tone_alert.message}</span>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── 3. Suggested Next Questions ── */}
-        <div className="panel panel--suggestions">
-          <span className="panel-label">Suggested Next Questions</span>
-          {suggestions.length > 0 ? (
-            <div className="sq-cards">
-
-              {/* Primary — recommended next question */}
-              <div className="sq-primary">
-                <div className="sq-primary__meta">
-                  <span className="sq-badge sq-badge--recommended">Recommended</span>
-                  {getQuestionIntent(suggestions[0]) && (
-                    <span className="sq-badge sq-badge--intent">{getQuestionIntent(suggestions[0])}</span>
-                  )}
-                </div>
-                <p className="sq-primary__text">{suggestions[0]}</p>
-              </div>
-
-              {/* Alternatives — secondary options */}
-              {suggestions.slice(1).map((q, i) => (
-                <div key={i + 1} className="sq-alt">
-                  <div className="sq-alt__meta">
-                    <span className="sq-alt__label">Alternative</span>
-                    {getQuestionIntent(q) && (
-                      <span className="sq-badge sq-badge--intent">{getQuestionIntent(q)}</span>
-                    )}
-                  </div>
-                  <p className="sq-alt__text">{q}</p>
-                </div>
-              ))}
-
-            </div>
-          ) : (
-            <p className="panel-placeholder">Follow-up question ideas will appear once AI has enough context.</p>
-          )}
-        </div>
-
-        {/* ── 4. Info Card — shown only when LLM returns one ── */}
-        {infoCard && (
-          <div className="panel panel--info">
-            <span className="panel-label">Quick Reference</span>
-            <p className="info-card__term">{infoCard.term}</p>
-            <p className="info-card__note">{infoCard.note}</p>
-          </div>
-        )}
-
-        {/* ── Row 3: Transcript (secondary) ── */}
+        {/* ── Left column: transcript ── */}
+        <div className="col col--left">
         <div className="panel panel--transcript">
           <div className="transcript-header">
             <span className="panel-label">
@@ -537,13 +475,15 @@ export default function App() {
                 ? 'Demo Transcript'
                 : isCapturing
                   ? (isListening ? 'Browser Call · Mic + Tab' : 'Browser Call')
-                  : isSessionIdle && visibleLines.length > 0
-                    ? `${SESSION_MODE_LABEL[sessionMode] ?? 'Session'} — Ended`
-                    : 'Live Transcript'}
+                  : micStream.isStreaming
+                    ? 'Live Transcript'
+                    : isSessionIdle && visibleLines.length > 0
+                      ? `${SESSION_MODE_LABEL[sessionMode] ?? 'Session'} — Ended`
+                      : 'Live Transcript'}
             </span>
             <div className="mic-controls">
-              {/* Language toggle — hidden during demo or browser-call capture */}
-              {!isDemoMode && !isCapturing && (
+              {/* Language toggle — hidden during demo, capture, or mic streaming */}
+              {!isDemoMode && !isCapturing && !micStream.isStreaming && (
                 <button className="btn btn--ghost" onClick={handleLangToggle} title="Toggle language">
                   {lang}
                 </button>
@@ -560,7 +500,7 @@ export default function App() {
                     className="btn btn--browser"
                     onClick={handleStartBrowserCall}
                     disabled={connStatus !== 'connected' || isListening || captureStatus === 'requesting'}
-                    title="Capture browser tab audio (Jitsi, Meet, etc.)"
+                    title="Start before your call begins — then immediately select the call tab and enable audio sharing"
                   >
                     🖥 Browser Call
                   </button>
@@ -569,16 +509,13 @@ export default function App() {
 
               {/* Mic mode controls — hidden while capturing or in demo */}
               {!isDemoMode && !isCapturing && (
-                !isSupported ? (
-                  <span className="mic-unsupported">Chrome required for microphone</span>
-                ) : (
-                  <button
-                    className={`btn ${isListening ? 'btn--stop' : 'btn--start'}`}
-                    onClick={handleToggleListen}
-                  >
-                    {isListening ? '⏹ Stop' : '🎙 Start'}
-                  </button>
-                )
+                <button
+                  className={`btn ${micStream.isStreaming ? 'btn--stop' : 'btn--start'}`}
+                  onClick={handleToggleListen}
+                  disabled={connStatus !== 'connected'}
+                >
+                  {micStream.isStreaming ? '⏹ Stop' : '🎙 Start'}
+                </button>
               )}
 
               {/* Demo exit */}
@@ -620,18 +557,18 @@ export default function App() {
               Exact duplicates of your speech are filtered. Near-duplicates and ordering gaps may still occur.
             </p>
           )}
-          {micError && (
-            <p className="mic-error">{MIC_ERROR_MSG[micError] ?? 'Unknown microphone error.'}</p>
+          {micStream.error && (
+            <p className="mic-error">{MIC_ERROR_MSG[micStream.error] ?? 'Unknown microphone error.'}</p>
           )}
           {(captureError || audioError) && (
             <p className="mic-error">
               {CAPTURE_ERROR_MSG[captureError ?? audioError] ?? 'Audio capture error.'}
             </p>
           )}
-          {(isListening || isCapturing || isDemoMode || visibleLines.length > 0) ? (
+          {(micStream.isStreaming || isListening || isCapturing || isDemoMode || visibleLines.length > 0) ? (
             <TranscriptBar
               finalLines={visibleLines}
-              interimText={isDemoMode ? '' : interimText}
+              interimText={(isDemoMode || micStream.isStreaming) ? '' : interimText}
             />
           ) : (
             <p className="panel-placeholder">
@@ -639,8 +576,103 @@ export default function App() {
             </p>
           )}
         </div>
+        </div>{/* end col--left */}
 
-        {/* ── Row 4: Connection / system ── */}
+        {/* ── Right column: coaching + signals + questions + info ── */}
+        <div className="col col--right">
+
+          {/* 1. Warning Chips — rule-based signals, auto-expire */}
+          {ruleSignal && (
+            <div className="warning-row">
+              <div
+                className="warning-chip"
+                style={{
+                  borderColor: (SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b') + '55',
+                  background:  (SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b') + '18',
+                }}
+              >
+                <span className="warning-chip__dot" style={{ background: SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#64748b' }} />
+                <span className="warning-chip__label" style={{ color: SIGNAL_COLOR[ruleSignal.tone_alert?.type] ?? '#94a3b8' }}>
+                  {SIGNAL_LABEL[ruleSignal.tone_alert?.type] ?? ruleSignal.tone_alert?.type}
+                </span>
+                {ruleSignal.tone_alert?.message && (
+                  <span className="warning-chip__msg">{ruleSignal.tone_alert.message}</span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 2. Primary AI Coaching Card */}
+          <div className="panel coaching-card">
+            <div className="coaching-card__header">
+              <span className="panel-label" style={{ marginBottom: 0 }}>AI Coaching</span>
+              <span className="coaching-card__badge">AI Coach</span>
+            </div>
+            {coachingHistory.length > 0 ? (
+              coachingHistory.slice(-2).reverse().map((entry, i) => (
+                <p
+                  key={entry.ts}
+                  className={i === 0 ? 'coaching-card__text' : 'coaching-card__prev'}
+                  style={i === 1 ? { opacity: 0.65 } : undefined}
+                >
+                  {entry.feedback}
+                </p>
+              ))
+            ) : (
+              <p className="panel-placeholder coaching-card__empty">
+                Coaching advice will appear once the conversation starts.
+              </p>
+            )}
+          </div>
+
+          {/* 3. Suggested Next Questions */}
+          <div className="panel panel--suggestions">
+            <span className="panel-label">Suggested Next Questions</span>
+            {suggestions.length > 0 ? (
+              <div className="sq-cards">
+
+                {/* Primary — recommended next question */}
+                <div className="sq-primary">
+                  <div className="sq-primary__meta">
+                    <span className="sq-badge sq-badge--recommended">Recommended</span>
+                    {getQuestionIntent(suggestions[0]) && (
+                      <span className="sq-badge sq-badge--intent">{getQuestionIntent(suggestions[0])}</span>
+                    )}
+                  </div>
+                  <p className="sq-primary__text">{suggestions[0]}</p>
+                </div>
+
+                {/* Alternatives — secondary options */}
+                {suggestions.slice(1).map((q, i) => (
+                  <div key={i + 1} className="sq-alt">
+                    <div className="sq-alt__meta">
+                      <span className="sq-alt__label">Alternative</span>
+                      {getQuestionIntent(q) && (
+                        <span className="sq-badge sq-badge--intent">{getQuestionIntent(q)}</span>
+                      )}
+                    </div>
+                    <p className="sq-alt__text">{q}</p>
+                  </div>
+                ))}
+
+              </div>
+            ) : (
+              <p className="panel-placeholder">Follow-up question ideas will appear once AI has enough context.</p>
+            )}
+          </div>
+
+          {/* 4. Info Card — shown only when LLM returns one */}
+          {infoCard && (
+            <div className="panel panel--info">
+              <span className="panel-label">Quick Reference</span>
+              <p className="info-card__term">{infoCard.term}</p>
+              <p className="info-card__note">{infoCard.note}</p>
+            </div>
+          )}
+
+        </div>{/* end col--right */}
+
+        {/* ── Full-width: connection / system ── */}
         <div className="panel panel--connection">
           <div className="connection-row">
             <span className="panel-label" style={{ marginBottom: 0 }}>Connection</span>

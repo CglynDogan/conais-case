@@ -35,6 +35,7 @@ export function createSttProvider({
   encoding   = 'opus',
   sampleRate = 48000,
   container  = 'webm',
+  diarize    = true,   // false for single-speaker sources (mic-only mode)
 }) {
   const emitter = new EventEmitter();
 
@@ -46,10 +47,11 @@ export function createSttProvider({
   const paramObj = {
     model,
     language:        langCode,
-    punctuate:       'true',
+    smart_format:    'true',   // improved punctuation, numbers, and formatting
+    filler_words:    'true',   // preserve filler words (Turkish: ee, şey, yani, etc.)
     interim_results: 'false',
     endpointing:     '300',
-    diarize:         'true',   // speaker turn separation for browser-call path
+    diarize:         diarize ? 'true' : 'false',
   };
 
   if (container) {

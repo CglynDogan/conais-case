@@ -10,9 +10,9 @@
  *
  * Usage (one instance per browser WS connection):
  *   const handler = createAudioStreamHandler({ apiKey, onTranscript });
- *   handler.handleStart('en-US');   // called when AUDIO_START event arrives
- *   handler.handleChunk(buffer);    // called for each binary WS frame
- *   handler.handleStop();           // called when AUDIO_STOP event arrives or WS closes
+ *   handler.handleStart('en-US', 'browser');  // 'browser' or 'mic'
+ *   handler.handleChunk(buffer);              // called for each binary WS frame
+ *   handler.handleStop();                     // called when AUDIO_STOP event arrives or WS closes
  */
 
 import { createSttProvider } from './sttProvider.js';
@@ -28,9 +28,10 @@ export function createAudioStreamHandler({ apiKey, onTranscript, onError }) {
   let stt         = null;
   let active      = false;
   let currentLang = 'tr-TR';
+  let isMicSource = false; // true when source='mic' — forces speaker='agent', disables diarize
   let chunkCount  = 0;
 
-  function handleStart(lang = 'tr-TR') {
+  function handleStart(lang = 'tr-TR', source = 'browser') {
     if (!apiKey) {
       console.warn('[AUDIO] DEEPGRAM_API_KEY not set — browser audio stream disabled');
       onError?.('deepgram-not-configured');
@@ -44,14 +45,17 @@ export function createAudioStreamHandler({ apiKey, onTranscript, onError }) {
     }
 
     currentLang = lang;
+    isMicSource = source === 'mic';
     active      = true;
     chunkCount  = 0;
 
-    // Browser MediaRecorder produces WebM/Opus — use browser-format defaults
-    stt = createSttProvider({ apiKey, language: lang });
+    // Mic source: single speaker (no diarization needed), always tagged as 'agent'
+    // Browser source: multi-speaker (diarization on), speaker tags from Deepgram
+    stt = createSttProvider({ apiKey, language: lang, diarize: !isMicSource });
 
     stt.on('transcript', ({ text, speaker }) => {
-      onTranscript({ text, lang: currentLang, ts: Date.now(), speaker: speaker ?? 'unknown' });
+      const resolvedSpeaker = isMicSource ? 'agent' : (speaker ?? 'unknown');
+      onTranscript({ text, lang: currentLang, ts: Date.now(), speaker: resolvedSpeaker });
     });
 
     stt.on('error', (err) => {
@@ -67,7 +71,7 @@ export function createAudioStreamHandler({ apiKey, onTranscript, onError }) {
       if (wasActive) onError?.('stt-disconnected');
     });
 
-    console.log(`[AUDIO] Stream started (lang:${lang})`);
+    console.log(`[AUDIO] Stream started (lang:${lang} source:${source})`);
   }
 
   function handleChunk(data) {

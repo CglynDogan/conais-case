@@ -134,10 +134,10 @@ function createGeminiAnalyzer(apiKey, modelName) {
     },
   });
 
-  async function analyze(session, { lastFeedback = "" } = {}) {
+  async function analyze(session, { recentFeedbacks = [], coachingMode = "full" } = {}) {
     if (!session.getLatest()) return SAFE_FALLBACK;
 
-    const userPrompt = buildUserPrompt({ session, lastFeedback });
+    const userPrompt = buildUserPrompt({ session, recentFeedbacks, coachingMode });
 
     let raw;
     try {
@@ -167,10 +167,10 @@ function createGeminiAnalyzer(apiKey, modelName) {
 function createOpenAiAnalyzer(apiKey, modelName) {
   const client = new OpenAI({ apiKey });
 
-  async function analyze(session, { lastFeedback = "" } = {}) {
+  async function analyze(session, { recentFeedbacks = [], coachingMode = "full" } = {}) {
     if (!session.getLatest()) return SAFE_FALLBACK;
 
-    const userPrompt = buildUserPrompt({ session, lastFeedback });
+    const userPrompt = buildUserPrompt({ session, recentFeedbacks, coachingMode });
 
     let raw;
     let finishReason = "";

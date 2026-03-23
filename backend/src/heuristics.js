@@ -212,12 +212,29 @@ function detectTooFast(latest, previous) {
   };
 }
 
-/** Fires once the utterance count reaches the threshold. */
+/**
+ * Fires when the utterance count reaches the threshold AND the agent just spoke
+ * without already asking a question.
+ *
+ * Guards:
+ *   1. latest.speaker must be 'agent' — only warn when the agent just finished talking.
+ *      If the customer spoke last, "ask a question" is not actionable advice.
+ *   2. Suppress if the agent's text contains '?' — they are already questioning.
+ *      Discovery-style turns like "Ne gibi sancılar yaşadınız? En büyük engel neydi?"
+ *      should never trigger a "try asking a question" warning.
+ */
 function detectLongMonologue(utteranceCount, contextWindow) {
   if (utteranceCount < LONG_MONOLOGUE_THRESHOLD) return null;
 
   const latest = contextWindow[contextWindow.length - 1];
-  const lang   = latest?.lang?.startsWith('tr') ? 'tr' : 'en';
+
+  // Guard 1: only meaningful when the agent just spoke
+  if (latest?.speaker !== 'agent') return null;
+
+  // Guard 2: agent is already asking — not a true monologue
+  if (latest?.text?.includes('?')) return null;
+
+  const lang = latest?.lang?.startsWith('tr') ? 'tr' : 'en';
   return {
     tone_alert: {
       type:    'long_monologue',

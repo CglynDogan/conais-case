@@ -34,15 +34,14 @@ export function TranscriptBar({ finalLines, interimText }) {
             const text    = typeof line === 'string' ? line : line.text;
             const speaker = typeof line === 'string' ? 'me'  : (line.speaker ?? 'me');
 
-            // Side and bubble class are determined independently so diarized speakers
-            // get visual separation without falsely claiming "Ben" (agent) identity.
+            // Side is determined by AUDIO SOURCE, not diarized identity.
+            //   'me' / 'agent'   → right (local mic — the coached user)
+            //   everything else  → left  (tab/desktop audio — all remote voices)
             //
-            //   'me' / 'agent'   → right + indigo  (genuinely known: mic mode)
-            //   'customer'       → left  + neutral  (genuinely known: demo mode)
-            //   'speaker_0'      → left  + slate    (diarized: first voice, role unknown)
-            //   'speaker_1'      → right + blue     (diarized: second voice, role unknown)
-            //   'unknown'        → left  + neutral
-            const sideClass   = (speaker === 'me' || speaker === 'agent' || speaker === 'speaker_1')
+            // This means speaker_0 and speaker_1 both stay on the left even when
+            // Deepgram splits the remote side into multiple diarized voices.
+            // Bubble style still differs (dia-a vs dia-b) to show there are two remote speakers.
+            const sideClass   = (speaker === 'me' || speaker === 'agent')
                                   ? 'chat-wrap--me' : 'chat-wrap--other';
             const bubbleClass = speaker === 'me'        ? 'chat-bubble--me'
                               : speaker === 'agent'     ? 'chat-bubble--me'
