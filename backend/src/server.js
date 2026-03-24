@@ -131,11 +131,8 @@ server.on("upgrade", (req, socket, head) => {
 
 // ── LLM analyzer (shared — stateless, safe to share across connections) ──
 const llmAnalyzer = createLlmAnalyzer({
-  provider: process.env.LLM_PROVIDER,
-  geminiKey: process.env.GEMINI_API_KEY,
-  openaiKey: process.env.OPENAI_API_KEY,
+  geminiKey:   process.env.GEMINI_API_KEY,
   geminiModel: process.env.GEMINI_MODEL,
-  openaiModel: process.env.OPENAI_MODEL,
 });
 if (!llmAnalyzer) {
   console.log("[LLM] No provider configured — running in rule-only mode");

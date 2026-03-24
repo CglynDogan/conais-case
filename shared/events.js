@@ -32,7 +32,8 @@ export const WS_EVENTS = {
 
   /**
    * LLM / heuristics coaching payload.
-   * Shape: { tone_alert, suggestions, info_card }
+   * Rule shape:  { source: 'rule', tone_alert: { type, message } }
+   * LLM shape:   { source: 'llm', feedback, suggested_questions, info_card }
    */
   ANALYSIS_UPDATE: 'analysis:update',
 

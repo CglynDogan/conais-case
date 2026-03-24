@@ -1,33 +1,26 @@
 /**
  * llmAnalyzer.js
  *
- * Provider-agnostic coaching analysis layer.
- * Supports Gemini and OpenAI via LLM_PROVIDER env var.
+ * Gemini-powered coaching analysis layer.
  *
- * Output contract (unchanged):
+ * Output contract:
  *   { source: 'llm', feedback, suggested_questions, info_card }
  *
- * Provider selection:
- *   LLM_PROVIDER=gemini  (default) — requires GEMINI_API_KEY
- *   LLM_PROVIDER=openai            — requires OPENAI_API_KEY
- *
  * Usage:
- *   const analyzer = createLlmAnalyzer({ provider, geminiKey, openaiKey, ... });
+ *   const analyzer = createLlmAnalyzer({ geminiKey, geminiModel });
  *   if (analyzer) {
- *     const result = await analyzer.analyze(session, { lastFeedback });
+ *     const result = await analyzer.analyze(session, { recentFeedbacks, coachingMode });
  *   }
  *
- * Returns null from factory if the selected provider has no API key.
+ * Returns null from factory if GEMINI_API_KEY is not set.
  */
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import OpenAI from "openai";
 import { SYSTEM_PROMPT, buildUserPrompt } from "./promptBuilder.js";
 
 const TIMEOUT_MS = 10_000;
 
 const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite-preview";
-const DEFAULT_OPENAI_MODEL = "gpt-5-nano";
 
 // ── Response schema (Gemini structured output) ─────────────────────
 
@@ -162,113 +155,16 @@ function createGeminiAnalyzer(apiKey, modelName) {
   return { analyze };
 }
 
-// ── OpenAI provider ────────────────────────────────────────────────
-
-function createOpenAiAnalyzer(apiKey, modelName) {
-  const client = new OpenAI({ apiKey });
-
-  async function analyze(session, { recentFeedbacks = [], coachingMode = "full" } = {}) {
-    if (!session.getLatest()) return SAFE_FALLBACK;
-
-    const userPrompt = buildUserPrompt({ session, recentFeedbacks, coachingMode });
-
-    let raw;
-    let finishReason = "";
-    try {
-      const completion = await withTimeout(
-        client.chat.completions.create({
-          model: modelName,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userPrompt },
-          ],
-          response_format: { type: "json_object" },
-          max_completion_tokens: 300, // cap output — schema fits in ~180 tokens; prevents padding
-          // temperature omitted — gpt-5-nano only supports the default value (1)
-        }),
-        TIMEOUT_MS,
-      );
-      const choice = completion.choices[0];
-      finishReason = choice?.finish_reason ?? "";
-      const msg = choice?.message;
-
-      // Extract text content from all known response shapes:
-      //   1. string  — standard json_object mode (most models)
-      //   2. array   — content-block format used by some newer OpenAI models
-      //   3. null    — model refused or was filtered (refusal field has reason)
-      const rawContent = msg?.content;
-      let contentStr = "";
-      if (typeof rawContent === "string") {
-        contentStr = rawContent;
-      } else if (Array.isArray(rawContent)) {
-        // Find the first text block in a content-part array
-        const textPart = rawContent.find((b) => b?.type === "text");
-        contentStr =
-          textPart?.text ??
-          rawContent
-            .map((b) => b?.text ?? "")
-            .filter(Boolean)
-            .join("");
-      }
-
-      console.log(
-        `[LLM] OpenAI message — finish_reason:${finishReason} content-shape:${Array.isArray(rawContent) ? "array(" + rawContent.length + ")" : typeof rawContent} extracted-len:${contentStr.length}`,
-      );
-      if (!contentStr && msg?.refusal) {
-        console.warn("[LLM] OpenAI refusal:", msg.refusal);
-      }
-
-      raw = safeParseJson(contentStr);
-    } catch (err) {
-      console.warn("[LLM] OpenAI call failed:", err.message);
-      return SAFE_FALLBACK;
-    }
-
-    if (!raw) {
-      console.warn(
-        `[LLM] Could not parse OpenAI response — finish_reason:${finishReason}`,
-      );
-      return SAFE_FALLBACK;
-    }
-
-    return normalize(raw);
-  }
-
-  return { analyze };
-}
-
 // ── Public factory ─────────────────────────────────────────────────
 
 /**
  * @param {{
- *   provider?:    string,   // 'gemini' (default) | 'openai'
  *   geminiKey?:   string,
- *   openaiKey?:   string,
  *   geminiModel?: string,
- *   openaiModel?: string,
  * }} opts
  * @returns {{ analyze: Function } | null}
  */
-export function createLlmAnalyzer({
-  provider = "gemini",
-  geminiKey,
-  openaiKey,
-  geminiModel,
-  openaiModel,
-} = {}) {
-  if (provider === "openai") {
-    if (!openaiKey) {
-      console.warn(
-        "[LLM] LLM_PROVIDER=openai but OPENAI_API_KEY not set — LLM disabled",
-      );
-      return null;
-    }
-    const model = openaiModel ?? DEFAULT_OPENAI_MODEL;
-    console.log(`[LLM] OpenAI provider ready — model:${model}`);
-    return createOpenAiAnalyzer(openaiKey, model);
-  }
-
-  // Default: gemini
+export function createLlmAnalyzer({ geminiKey, geminiModel } = {}) {
   if (!geminiKey) {
     console.warn("[LLM] GEMINI_API_KEY not set — LLM analysis disabled");
     return null;
