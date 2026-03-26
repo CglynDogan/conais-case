@@ -28,6 +28,4 @@ yarn-error.log*
 
 # Claude planning / internal docs
 .claude/
-claude_code_prompt_*.md
-ai-speech-v*-claude.md
 
